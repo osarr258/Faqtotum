@@ -10,6 +10,7 @@ import { useAudioRecorder, RecordingPresets, AudioModule, setAudioModeAsync } fr
 import * as FileSystem from "expo-file-system/legacy";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Txt, Button } from "@/src/components/ui";
+import AIAnalyzing from "@/src/components/AIAnalyzing";
 import { api } from "@/src/api";
 import { colors, font, fontSize, radius, spacing } from "@/src/theme";
 
@@ -19,7 +20,7 @@ const URGENCY_LABELS: Record<string, string> = { faible: "Faible", moyenne: "Mod
 type Diag = {
   problem: string; trade: string; trade_label: string; trade_icon: string; urgency: string;
   duration_min: number; duration_max: number; price_min: number; price_max: number;
-  materials: string[]; confidence: number; advice: string;
+  materials: string[]; causes: string[]; confidence: number; advice: string;
 };
 
 export default function Diagnose() {
@@ -96,8 +97,11 @@ export default function Diagnose() {
     if (!text.trim() && images.length === 0) { setError("Décrivez le problème ou ajoutez une photo."); return; }
     setError(""); setAnalyzing(true); setDiag(null);
     try {
-      const d = await api<Diag>("/ai/diagnose", { method: "POST", body: { text, images } });
-      setDiag(d);
+      const [d] = await Promise.all([
+        api<Diag>("/ai/diagnose", { method: "POST", body: { text, images } }),
+        new Promise((r) => setTimeout(r, 5200)),
+      ]);
+      setDiag(d as Diag);
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
     } catch (e: any) {
       setError(e.message);
@@ -207,6 +211,18 @@ export default function Diagnose() {
               <View style={styles.gaugeBg}><View style={[styles.gaugeFill, { width: `${diag.confidence}%` }]} /></View>
             </View>
 
+            {diag.causes?.length > 0 && (
+              <View style={styles.card}>
+                <Txt weight="semibold" style={{ marginBottom: spacing.sm }}>Causes possibles</Txt>
+                {diag.causes.map((c, i) => (
+                  <View key={i} style={styles.matRow}>
+                    <Ionicons name="ellipse" size={7} color={colors.brand} style={{ marginTop: 6 }} />
+                    <Txt color={colors.onSurfaceSecondary} style={{ marginLeft: spacing.sm, flex: 1 }}>{c}</Txt>
+                  </View>
+                ))}
+              </View>
+            )}
+
             {diag.materials?.length > 0 && (
               <View style={styles.card}>
                 <Txt weight="semibold" style={{ marginBottom: spacing.sm }}>Matériel probable</Txt>
@@ -235,6 +251,7 @@ export default function Diagnose() {
           </>
         )}
       </KeyboardAwareScrollView>
+      {analyzing && <AIAnalyzing />}
     </View>
   );
 }

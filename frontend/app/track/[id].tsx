@@ -54,6 +54,14 @@ export default function Track() {
   if (loading || !m) return <View style={styles.center}><ActivityIndicator color={colors.brand} size="large" /></View>;
 
   const st = STATUS[m.status] || STATUS.en_route;
+  const STEPS: { label: string; icon: any }[] = [
+    { label: "Demandé", icon: "document-text" },
+    { label: "Accepté", icon: "checkmark-circle" },
+    { label: "En route", icon: "car-sport" },
+    { label: "Arrivé", icon: "location" },
+    { label: "Terminé", icon: "flag" },
+  ];
+  const activeIndex = m.status === "completed" ? 4 : m.status === "arrived" ? 3 : 2;
   const artisanPt = { lat: m.current_lat ?? m.artisan_start_lat ?? m.client_lat, lng: m.current_lng ?? m.artisan_start_lng ?? m.client_lng };
   const clientPt = { lat: m.client_lat, lng: m.client_lng };
 
@@ -67,6 +75,23 @@ export default function Track() {
       </View>
 
       <View style={[styles.sheet, { paddingBottom: insets.bottom + spacing.lg }]}>
+        <View style={styles.stepper}>
+          {STEPS.map((s, i) => {
+            const done = i < activeIndex;
+            const current = i === activeIndex;
+            const active = done || current;
+            return (
+              <View key={s.label} style={styles.step}>
+                {i > 0 && <View style={[styles.stepLine, { backgroundColor: i <= activeIndex ? colors.brand : colors.surfaceTertiary }]} />}
+                <View style={[styles.stepDot, { backgroundColor: active ? colors.brand : colors.surfaceTertiary, borderColor: current ? colors.brand : "transparent" }]}>
+                  <Ionicons name={done ? "checkmark" : s.icon} size={13} color={active ? colors.onBrand : colors.muted} />
+                </View>
+                <Txt size="sm" color={active ? colors.onSurface : colors.muted} style={{ marginTop: 4, fontSize: 10 }} numberOfLines={1}>{s.label}</Txt>
+              </View>
+            );
+          })}
+        </View>
+
         <View style={styles.statusRow}>
           <View style={[styles.statusIcon, { backgroundColor: st.color + "22" }]}>
             <Ionicons name={st.icon} size={22} color={st.color} />
@@ -111,6 +136,10 @@ const styles = StyleSheet.create({
   mapWrap: { flex: 1, backgroundColor: colors.surfaceSecondary },
   backBtn: { position: "absolute", left: spacing.lg, width: 40, height: 40, borderRadius: 20, backgroundColor: colors.surface, alignItems: "center", justifyContent: "center", ...shadow.card },
   sheet: { backgroundColor: colors.surface, borderTopLeftRadius: radius.lg, borderTopRightRadius: radius.lg, padding: spacing.lg, borderTopWidth: 1, borderColor: colors.border },
+  stepper: { flexDirection: "row", marginBottom: spacing.lg },
+  step: { flex: 1, alignItems: "center" },
+  stepLine: { position: "absolute", top: 13, right: "50%", width: "100%", height: 2 },
+  stepDot: { width: 28, height: 28, borderRadius: 14, borderWidth: 2, alignItems: "center", justifyContent: "center" },
   statusRow: { flexDirection: "row", alignItems: "center" },
   statusIcon: { width: 44, height: 44, borderRadius: 22, alignItems: "center", justifyContent: "center" },
   etaBubble: { alignItems: "center", paddingHorizontal: spacing.md },

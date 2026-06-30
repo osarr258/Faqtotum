@@ -38,7 +38,7 @@ export default function ClientBookings() {
         keyExtractor={(b) => b.booking_id}
         contentContainerStyle={{ paddingHorizontal: spacing.lg, paddingBottom: spacing["3xl"], flexGrow: 1 }}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.brand} />}
-        ListEmptyComponent={<EmptyState icon="calendar-outline" title="Aucune réservation" subtitle="Réservez un artisan depuis l'accueil pour commencer." />}
+        ListEmptyComponent={<EmptyState icon="calendar-outline" title="Aucune réservation" subtitle="Décrivez votre problème, notre IA trouve le meilleur pro." ctaLabel="Décrire mon problème" onCta={() => router.push("/diagnose")} ctaTestID="empty-diagnose-cta" />}
         renderItem={({ item }) => (
           <View testID={`booking-${item.booking_id}`} style={styles.card}>
             <View style={styles.cardTop}>

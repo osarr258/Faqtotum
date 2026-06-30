@@ -39,7 +39,7 @@ export default function ConversationsScreen() {
         keyExtractor={(c) => c.conversation_id}
         contentContainerStyle={{ paddingBottom: spacing["3xl"], flexGrow: 1 }}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.brand} />}
-        ListEmptyComponent={<EmptyState icon="chatbubbles-outline" title="Aucune conversation" subtitle="Une conversation est créée automatiquement après une réservation." />}
+        ListEmptyComponent={<EmptyState icon="chatbubbles-outline" title="Aucune conversation" subtitle="Une conversation s'ouvre automatiquement après une réservation." ctaLabel="Trouver un pro" onCta={() => router.push("/diagnose")} ctaTestID="empty-conv-cta" />}
         renderItem={({ item }) => (
           <Pressable
             testID={`conversation-${item.conversation_id}`}

@@ -74,14 +74,41 @@ export function Rating({ value, count }: { value: number; count?: number }) {
   );
 }
 
-export function EmptyState({ icon, title, subtitle }: { icon: keyof typeof Ionicons.glyphMap; title: string; subtitle?: string }) {
+export function EmptyState({ icon, title, subtitle, ctaLabel, onCta, ctaTestID }: { icon: keyof typeof Ionicons.glyphMap; title: string; subtitle?: string; ctaLabel?: string; onCta?: () => void; ctaTestID?: string }) {
   return (
     <View style={styles.empty}>
       <View style={styles.emptyIcon}>
-        <Ionicons name={icon} size={32} color={colors.muted} />
+        <Ionicons name={icon} size={32} color={colors.brand} />
       </View>
       <Txt weight="bold" size="lg" style={{ marginTop: spacing.lg, textAlign: "center" }}>{title}</Txt>
-      {subtitle && <Txt color={colors.muted} style={{ marginTop: spacing.xs, textAlign: "center" }}>{subtitle}</Txt>}
+      {subtitle && <Txt color={colors.muted} style={{ marginTop: spacing.xs, textAlign: "center", lineHeight: 20 }}>{subtitle}</Txt>}
+      {ctaLabel && onCta && (
+        <Button testID={ctaTestID || "empty-cta"} title={ctaLabel} onPress={onCta} style={{ marginTop: spacing.xl, paddingHorizontal: spacing["2xl"] }} />
+      )}
+    </View>
+  );
+}
+
+const TRUST_BADGES: { key: string; label: string; icon: keyof typeof Ionicons.glyphMap }[] = [
+  { key: "identity", label: "Identité vérifiée", icon: "person-circle" },
+  { key: "insurance", label: "Assurance vérifiée", icon: "umbrella" },
+  { key: "verified", label: "Pro vérifié", icon: "shield-checkmark" },
+];
+
+export function TrustBadges({ artisan, compact }: { artisan: { trust_score?: number; rating?: number; response_min?: number }; compact?: boolean }) {
+  const badges = [...TRUST_BADGES];
+  if ((artisan.rating || 0) >= 4.8) badges.push({ key: "top", label: "Top noté", icon: "trophy" });
+  if ((artisan.response_min || 99) <= 15) badges.push({ key: "fast", label: "Réponse rapide", icon: "flash" });
+  if ((artisan.trust_score || 0) >= 95) badges.push({ key: "premium", label: "Partenaire Premium", icon: "diamond" });
+  const list = compact ? badges.slice(0, 3) : badges;
+  return (
+    <View style={styles.badgeWrap}>
+      {list.map((b) => (
+        <View key={b.key} style={styles.badge} testID={`badge-${b.key}`}>
+          <Ionicons name={b.icon} size={12} color={colors.brand} />
+          <Text style={styles.badgeTxt}>{b.label}</Text>
+        </View>
+      ))}
     </View>
   );
 }
@@ -105,5 +132,8 @@ const styles = StyleSheet.create({
   btn: { height: 54, borderRadius: radius.md, alignItems: "center", justifyContent: "center", paddingHorizontal: spacing.lg },
   btnRow: { flexDirection: "row", alignItems: "center" },
   empty: { alignItems: "center", justifyContent: "center", paddingVertical: spacing["3xl"], paddingHorizontal: spacing.xl },
-  emptyIcon: { width: 72, height: 72, borderRadius: 36, backgroundColor: colors.surfaceSecondary, alignItems: "center", justifyContent: "center" },
+  emptyIcon: { width: 72, height: 72, borderRadius: 36, backgroundColor: colors.brand + "1A", alignItems: "center", justifyContent: "center" },
+  badgeWrap: { flexDirection: "row", flexWrap: "wrap", gap: 6 },
+  badge: { flexDirection: "row", alignItems: "center", backgroundColor: colors.brand + "14", borderWidth: 1, borderColor: colors.brand + "33", paddingHorizontal: 8, paddingVertical: 4, borderRadius: radius.pill },
+  badgeTxt: { fontFamily: font.semibold, fontSize: fontSize.sm, color: colors.brand, marginLeft: 4 },
 });

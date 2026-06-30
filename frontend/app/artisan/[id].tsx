@@ -6,12 +6,12 @@ import { useLocalSearchParams, useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { Txt, Button } from "@/src/components/ui";
+import { Txt, Button, TrustBadges } from "@/src/components/ui";
 import { api } from "@/src/api";
 import { useAuth } from "@/src/context/AuthContext";
 import { colors, font, fontSize, radius, spacing } from "@/src/theme";
 
-type Artisan = { artisan_id: string; name: string; title: string; bio: string; city: string; hourly_rate: number; rating: number; reviews_count: number; photo?: string; trade_name: string; phone?: string };
+type Artisan = { artisan_id: string; name: string; title: string; bio: string; city: string; hourly_rate: number; rating: number; reviews_count: number; photo?: string; trade_name: string; phone?: string; trust_score?: number; acceptance_rate?: number; response_min?: number };
 type Review = { review_id: string; from_name: string; rating: number; comment: string; created_at: string };
 
 const SLOTS = ["08:00", "10:00", "12:00", "14:00", "16:00", "18:00"];
@@ -107,6 +107,10 @@ export default function ArtisanDetail() {
             <Txt weight="semibold" size="sm" color={colors.success} style={{ marginLeft: 6 }}>Profil vérifié</Txt>
             <Ionicons name="location-outline" size={16} color={colors.muted} style={{ marginLeft: spacing.lg }} />
             <Txt size="sm" color={colors.muted} style={{ marginLeft: 4 }}>{artisan.city}</Txt>
+          </View>
+
+          <View style={{ marginTop: spacing.lg }}>
+            <TrustBadges artisan={artisan} />
           </View>
 
           <Txt weight="bold" size="lg" style={{ marginTop: spacing.xl, marginBottom: spacing.sm }}>À propos</Txt>

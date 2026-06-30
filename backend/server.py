@@ -141,6 +141,9 @@ class MissionInput(BaseModel):
     price_min: float = 0
     price_max: float = 0
 
+class BookInput(BaseModel):
+    artisan_id: str
+
 # ----------------------------- Categories -----------------------------
 
 CATEGORIES = [
@@ -592,6 +595,7 @@ async def ai_diagnose(data: DiagnoseInput, user=Depends(get_current_user)):
         "duration_min (number, heures), duration_max (number, heures), "
         "price_min (number, euros), price_max (number, euros), "
         "materials (array de strings), "
+        "causes (array de 2 à 3 causes probables, strings), "
         "confidence (entier 0-100), "
         "advice (string, conseil de sécurité court en français)."
     )
@@ -699,6 +703,10 @@ def mission_artisan_card(a: dict):
         "lng": a.get("lng"),
     }
 
+def match_eta(c: dict):
+    d = c.get("distance_km")
+    return max(3, min(40, round((d if d is not None else 5) / 35 * 60)))
+
 @api_router.post("/missions")
 async def create_mission(data: MissionInput, user=Depends(get_current_user)):
     artisans = await db.artisan_profiles.find({"is_subscribed": True, "trade": data.trade}, {"_id": 0}).to_list(500)
@@ -709,6 +717,11 @@ async def create_mission(data: MissionInput, user=Depends(get_current_user)):
     client_lat = data.lat if data.lat is not None else 48.8566
     client_lng = data.lng if data.lng is not None else 2.3522
     candidates = [a["artisan_id"] for a in ranked]
+    top_matches = []
+    for a in ranked[:3]:
+        card = mission_artisan_card(a)
+        card["eta_minutes"] = match_eta(card)
+        top_matches.append(card)
     top = ranked[0]
     mission = {
         "mission_id": new_id("msn"),
@@ -725,7 +738,8 @@ async def create_mission(data: MissionInput, user=Depends(get_current_user)):
         "client_lng": client_lng,
         "candidates": candidates,
         "candidate_index": 0,
-        "artisan": mission_artisan_card(top),
+        "top_matches": top_matches,
+        "artisan": top_matches[0],
         "status": "proposed",
         "eta_minutes": None,
         "accepted_at": None,
@@ -734,6 +748,30 @@ async def create_mission(data: MissionInput, user=Depends(get_current_user)):
     await db.missions.insert_one(mission)
     mission.pop("_id", None)
     return mission
+
+@api_router.post("/missions/{mission_id}/book")
+async def book_mission(mission_id: str, data: BookInput, user=Depends(get_current_user)):
+    m = await db.missions.find_one({"mission_id": mission_id}, {"_id": 0})
+    if not m or m["client_id"] != user["user_id"]:
+        raise HTTPException(status_code=404, detail="Mission introuvable")
+    a = await db.artisan_profiles.find_one({"artisan_id": data.artisan_id}, {"_id": 0})
+    if not a:
+        raise HTTPException(status_code=404, detail="Professionnel introuvable")
+    a = await enrich_artisan(a)
+    a["distance_km"] = round(haversine(m["client_lat"], m["client_lng"], a["lat"], a["lng"]), 1) if a.get("lat") else None
+    card = mission_artisan_card(a)
+    card["eta_minutes"] = match_eta(card)
+    a_lat = a.get("lat") if a.get("lat") is not None else m["client_lat"] + 0.05
+    a_lng = a.get("lng") if a.get("lng") is not None else m["client_lng"] + 0.05
+    dist = haversine(a_lat, a_lng, m["client_lat"], m["client_lng"])
+    eta = max(3, min(40, round(dist / 35 * 60)))
+    if dist < 0.1:
+        eta = 6
+    upd = {"status": "en_route", "accepted_at": now_utc().isoformat(), "eta_minutes": eta,
+           "artisan_start_lat": a_lat, "artisan_start_lng": a_lng, "artisan": card}
+    await db.missions.update_one({"mission_id": mission_id}, {"$set": upd})
+    m.update(upd)
+    return m
 
 async def _set_candidate(mission: dict, idx: int):
     aid = mission["candidates"][idx]
