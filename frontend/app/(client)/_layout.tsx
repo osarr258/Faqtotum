@@ -28,6 +28,10 @@ export default function ClientLayout() {
         options={{ title: "Réservations", tabBarIcon: ({ color, size }) => <Ionicons name="calendar" size={size} color={color} /> }}
       />
       <Tabs.Screen
+        name="messages"
+        options={{ title: "Messages", tabBarIcon: ({ color, size }) => <Ionicons name="chatbubbles" size={size} color={color} /> }}
+      />
+      <Tabs.Screen
         name="profile"
         options={{ title: "Profil", tabBarIcon: ({ color, size }) => <Ionicons name="person" size={size} color={color} /> }}
       />

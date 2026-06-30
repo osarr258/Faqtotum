@@ -20,6 +20,7 @@ export default function ArtisanLayout() {
       }}
     >
       <Tabs.Screen name="index" options={{ title: "Tableau de bord", tabBarIcon: ({ color, size }) => <Ionicons name="grid" size={size} color={color} /> }} />
+      <Tabs.Screen name="messages" options={{ title: "Messages", tabBarIcon: ({ color, size }) => <Ionicons name="chatbubbles" size={size} color={color} /> }} />
       <Tabs.Screen name="profile" options={{ title: "Mon profil", tabBarIcon: ({ color, size }) => <Ionicons name="briefcase" size={size} color={color} /> }} />
       <Tabs.Screen name="subscription" options={{ title: "Abonnement", tabBarIcon: ({ color, size }) => <Ionicons name="diamond" size={size} color={color} /> }} />
     </Tabs>

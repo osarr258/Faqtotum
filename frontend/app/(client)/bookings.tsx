@@ -1,18 +1,21 @@
 import { useState, useCallback } from "react";
-import { View, StyleSheet, FlatList, RefreshControl } from "react-native";
-import { useFocusEffect } from "expo-router";
+import { View, StyleSheet, FlatList, RefreshControl, Pressable } from "react-native";
+import { useFocusEffect, useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Txt, EmptyState, StatusBadge } from "@/src/components/ui";
+import ReviewModal from "@/src/components/ReviewModal";
 import { api } from "@/src/api";
 import { colors, radius, spacing } from "@/src/theme";
 
-type Booking = { booking_id: string; artisan_name: string; trade_name: string; date: string; slot: string; status: string; description: string };
+type Booking = { booking_id: string; conversation_id: string; artisan_name: string; trade_name: string; date: string; slot: string; status: string; description: string; reviewed: boolean };
 
 export default function ClientBookings() {
   const insets = useSafeAreaInsets();
+  const router = useRouter();
   const [bookings, setBookings] = useState<Booking[]>([]);
   const [refreshing, setRefreshing] = useState(false);
+  const [reviewTarget, setReviewTarget] = useState<Booking | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -52,8 +55,34 @@ export default function ClientBookings() {
               <Txt size="sm" style={{ marginLeft: 6 }}>{item.slot}</Txt>
             </View>
             {item.description ? <Txt color={colors.onSurfaceTertiary} size="sm" style={{ marginTop: spacing.sm }}>{item.description}</Txt> : null}
+            <View style={styles.actions}>
+              <Pressable testID={`message-${item.booking_id}`} onPress={() => router.push({ pathname: "/chat/[id]", params: { id: item.conversation_id, name: item.artisan_name } })} style={[styles.actBtn, { backgroundColor: colors.surfaceSecondary }]}>
+                <Ionicons name="chatbubble-ellipses-outline" size={16} color={colors.onSurface} />
+                <Txt weight="semibold" size="sm" style={{ marginLeft: 6 }}>Message</Txt>
+              </Pressable>
+              {item.status === "completed" && (
+                item.reviewed ? (
+                  <View style={[styles.actBtn, { backgroundColor: "#D1FAE5" }]}>
+                    <Ionicons name="checkmark-circle" size={16} color={colors.success} />
+                    <Txt weight="semibold" size="sm" color={colors.success} style={{ marginLeft: 6 }}>Avis publié</Txt>
+                  </View>
+                ) : (
+                  <Pressable testID={`review-${item.booking_id}`} onPress={() => setReviewTarget(item)} style={[styles.actBtn, { backgroundColor: colors.brand }]}>
+                    <Ionicons name="star" size={16} color={colors.onSurfaceInverse} />
+                    <Txt weight="semibold" size="sm" color={colors.onSurfaceInverse} style={{ marginLeft: 6 }}>Noter</Txt>
+                  </Pressable>
+                )
+              )}
+            </View>
           </View>
         )}
+      />
+      <ReviewModal
+        visible={!!reviewTarget}
+        bookingId={reviewTarget?.booking_id || null}
+        targetName={reviewTarget?.artisan_name || ""}
+        onClose={() => setReviewTarget(null)}
+        onSubmitted={() => { setReviewTarget(null); load(); }}
       />
     </View>
   );
@@ -64,4 +93,6 @@ const styles = StyleSheet.create({
   card: { backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.border, borderRadius: radius.lg, padding: spacing.lg, marginBottom: spacing.md },
   cardTop: { flexDirection: "row", alignItems: "center", marginBottom: spacing.md },
   metaRow: { flexDirection: "row", alignItems: "center" },
+  actions: { flexDirection: "row", gap: spacing.sm, marginTop: spacing.md },
+  actBtn: { flexDirection: "row", alignItems: "center", justifyContent: "center", flex: 1, height: 42, borderRadius: radius.md },
 });

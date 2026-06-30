@@ -97,6 +97,7 @@ class ArtisanProfileInput(BaseModel):
     hourly_rate: float = 0
     photo: Optional[str] = None
     phone: Optional[str] = None
+    available: bool = True
 
 class BookingInput(BaseModel):
     artisan_id: str
@@ -106,6 +107,14 @@ class BookingInput(BaseModel):
 
 class BookingStatusInput(BaseModel):
     status: str
+
+class ReviewInput(BaseModel):
+    booking_id: str
+    rating: int
+    comment: str = ""
+
+class MessageInput(BaseModel):
+    text: str
 
 # ----------------------------- Categories -----------------------------
 
@@ -124,6 +133,30 @@ CATEGORIES = [
     {"slug": "couvreur", "name": "Couvreur", "icon": "home"},
 ]
 CATEGORY_MAP = {c["slug"]: c for c in CATEGORIES}
+
+import math
+
+CITY_COORDS = {
+    "Paris 11e": (48.8594, 2.3765),
+    "Paris 15e": (48.8417, 2.3003),
+    "Lyon 3e": (45.7597, 4.8554),
+    "Lyon 7e": (45.7333, 4.8425),
+    "Bordeaux": (44.8378, -0.5792),
+    "Marseille": (43.2965, 5.3698),
+    "Lille": (50.6292, 3.0573),
+    "Nice": (43.7102, 7.2620),
+    "Nantes": (47.2184, -1.5536),
+    "Toulouse": (43.6047, 1.4442),
+    "Rennes": (48.1173, -1.6778),
+    "Strasbourg": (48.5734, 7.7521),
+}
+
+def haversine(lat1, lon1, lat2, lon2):
+    R = 6371.0
+    dlat = math.radians(lat2 - lat1)
+    dlon = math.radians(lon2 - lon1)
+    a = math.sin(dlat / 2) ** 2 + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(dlon / 2) ** 2
+    return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
 
 # ----------------------------- Auth routes -----------------------------
 
@@ -214,7 +247,11 @@ async def enrich_artisan(a: dict):
     return a
 
 @api_router.get("/artisans")
-async def list_artisans(category: Optional[str] = None, q: Optional[str] = None):
+async def list_artisans(category: Optional[str] = None, q: Optional[str] = None,
+                        min_rate: Optional[float] = None, max_rate: Optional[float] = None,
+                        min_rating: Optional[float] = None, available: Optional[bool] = None,
+                        lat: Optional[float] = None, lng: Optional[float] = None,
+                        radius: Optional[float] = None, sort: Optional[str] = None):
     query = {"is_subscribed": True}
     if category:
         query["trade"] = category
@@ -223,7 +260,30 @@ async def list_artisans(category: Optional[str] = None, q: Optional[str] = None)
     if q:
         ql = q.lower()
         artisans = [a for a in artisans if ql in a.get("title", "").lower() or ql in a.get("city", "").lower() or ql in a.get("trade_name", "").lower() or ql in (a.get("name") or "").lower()]
-    artisans.sort(key=lambda x: x.get("rating", 0), reverse=True)
+    if min_rate is not None:
+        artisans = [a for a in artisans if a.get("hourly_rate", 0) >= min_rate]
+    if max_rate is not None:
+        artisans = [a for a in artisans if a.get("hourly_rate", 0) <= max_rate]
+    if min_rating is not None:
+        artisans = [a for a in artisans if a.get("rating", 0) >= min_rating]
+    if available is not None:
+        artisans = [a for a in artisans if a.get("available", True) == available]
+    if lat is not None and lng is not None:
+        for a in artisans:
+            if a.get("lat") is not None and a.get("lng") is not None:
+                a["distance_km"] = round(haversine(lat, lng, a["lat"], a["lng"]), 1)
+            else:
+                a["distance_km"] = None
+        if radius is not None:
+            artisans = [a for a in artisans if a.get("distance_km") is not None and a["distance_km"] <= radius]
+    if sort == "rate_asc":
+        artisans.sort(key=lambda x: x.get("hourly_rate", 0))
+    elif sort == "rate_desc":
+        artisans.sort(key=lambda x: x.get("hourly_rate", 0), reverse=True)
+    elif sort == "distance" and lat is not None:
+        artisans.sort(key=lambda x: x.get("distance_km") if x.get("distance_km") is not None else 1e9)
+    else:
+        artisans.sort(key=lambda x: x.get("rating", 0), reverse=True)
     return artisans
 
 @api_router.get("/artisans/top")
@@ -246,6 +306,7 @@ async def upsert_artisan_profile(data: ArtisanProfileInput, user=Depends(get_cur
         raise HTTPException(status_code=403, detail="Réservé aux artisans")
     existing = await db.artisan_profiles.find_one({"user_id": user["user_id"]})
     cat = CATEGORY_MAP.get(data.trade)
+    coords = CITY_COORDS.get(data.city)
     payload = {
         "trade": data.trade,
         "trade_name": cat["name"] if cat else data.trade,
@@ -256,6 +317,9 @@ async def upsert_artisan_profile(data: ArtisanProfileInput, user=Depends(get_cur
         "photo": data.photo,
         "phone": data.phone,
         "name": user["name"],
+        "available": data.available,
+        "lat": coords[0] if coords else None,
+        "lng": coords[1] if coords else None,
     }
     if existing:
         await db.artisan_profiles.update_one({"artisan_id": existing["artisan_id"]}, {"$set": payload})
@@ -267,6 +331,8 @@ async def upsert_artisan_profile(data: ArtisanProfileInput, user=Depends(get_cur
             "user_id": user["user_id"],
             "rating": 5.0,
             "reviews_count": 0,
+            "base_rating": 0,
+            "base_reviews_count": 0,
             "is_subscribed": False,
             "subscription_expires": None,
             "created_at": now_utc().isoformat(),
@@ -303,8 +369,10 @@ async def create_booking(data: BookingInput, user=Depends(get_current_user)):
     if not artisan:
         raise HTTPException(status_code=404, detail="Artisan introuvable")
     booking_id = new_id("bk")
+    conv_id = "conv_" + booking_id.split("_", 1)[1]
     booking = {
         "booking_id": booking_id,
+        "conversation_id": conv_id,
         "client_id": user["user_id"],
         "client_name": user["name"],
         "artisan_id": data.artisan_id,
@@ -318,20 +386,39 @@ async def create_booking(data: BookingInput, user=Depends(get_current_user)):
         "created_at": now_utc().isoformat(),
     }
     await db.bookings.insert_one(booking)
+    await db.conversations.insert_one({
+        "conversation_id": conv_id,
+        "booking_id": booking_id,
+        "client_id": user["user_id"],
+        "client_name": user["name"],
+        "artisan_user_id": artisan.get("user_id"),
+        "artisan_id": data.artisan_id,
+        "artisan_name": artisan.get("name") or artisan.get("title"),
+        "trade_name": artisan.get("trade_name"),
+        "last_message": "Réservation créée",
+        "last_at": now_utc().isoformat(),
+        "created_at": now_utc().isoformat(),
+    })
     booking.pop("_id", None)
     return booking
+
+async def annotate_reviewed(bookings, user_id):
+    for b in bookings:
+        rev = await db.reviews.find_one({"booking_id": b["booking_id"], "from_user_id": user_id})
+        b["reviewed"] = rev is not None
+    return bookings
 
 @api_router.get("/bookings/mine")
 async def my_bookings(user=Depends(get_current_user)):
     bookings = await db.bookings.find({"client_id": user["user_id"]}, {"_id": 0}).to_list(500)
     bookings.sort(key=lambda x: x.get("created_at", ""), reverse=True)
-    return bookings
+    return await annotate_reviewed(bookings, user["user_id"])
 
 @api_router.get("/bookings/received")
 async def received_bookings(user=Depends(get_current_user)):
     bookings = await db.bookings.find({"artisan_user_id": user["user_id"]}, {"_id": 0}).to_list(500)
     bookings.sort(key=lambda x: x.get("created_at", ""), reverse=True)
-    return bookings
+    return await annotate_reviewed(bookings, user["user_id"])
 
 @api_router.patch("/bookings/{booking_id}")
 async def update_booking(booking_id: str, data: BookingStatusInput, user=Depends(get_current_user)):
@@ -343,6 +430,121 @@ async def update_booking(booking_id: str, data: BookingStatusInput, user=Depends
     await db.bookings.update_one({"booking_id": booking_id}, {"$set": {"status": data.status}})
     booking["status"] = data.status
     return booking
+
+# ----------------------------- Reviews -----------------------------
+
+async def recompute_artisan_rating(artisan_id: str):
+    profile = await db.artisan_profiles.find_one({"artisan_id": artisan_id}, {"_id": 0})
+    if not profile:
+        return
+    revs = await db.reviews.find({"artisan_id": artisan_id, "to_role": "artisan"}, {"_id": 0}).to_list(2000)
+    base_rating = profile.get("base_rating", 0) or 0
+    base_count = profile.get("base_reviews_count", 0) or 0
+    total = base_count + len(revs)
+    if total == 0:
+        rating = 5.0
+    else:
+        rating = (base_rating * base_count + sum(r["rating"] for r in revs)) / total
+    await db.artisan_profiles.update_one(
+        {"artisan_id": artisan_id},
+        {"$set": {"rating": round(rating, 2), "reviews_count": total}},
+    )
+
+@api_router.post("/reviews")
+async def create_review(data: ReviewInput, user=Depends(get_current_user)):
+    booking = await db.bookings.find_one({"booking_id": data.booking_id}, {"_id": 0})
+    if not booking:
+        raise HTTPException(status_code=404, detail="Réservation introuvable")
+    if booking["status"] != "completed":
+        raise HTTPException(status_code=400, detail="Vous pourrez noter une fois la mission terminée")
+    if data.rating < 1 or data.rating > 5:
+        raise HTTPException(status_code=400, detail="La note doit être entre 1 et 5")
+    if user["user_id"] == booking["client_id"]:
+        to_role = "artisan"
+        to_user_id = booking.get("artisan_user_id")
+        artisan_id = booking["artisan_id"]
+        to_name = booking["artisan_name"]
+    elif user["user_id"] == booking.get("artisan_user_id"):
+        to_role = "client"
+        to_user_id = booking["client_id"]
+        artisan_id = None
+        to_name = booking["client_name"]
+    else:
+        raise HTTPException(status_code=403, detail="Non autorisé")
+    existing = await db.reviews.find_one({"booking_id": data.booking_id, "from_user_id": user["user_id"]})
+    if existing:
+        raise HTTPException(status_code=400, detail="Vous avez déjà laissé un avis")
+    review = {
+        "review_id": new_id("rev"),
+        "booking_id": data.booking_id,
+        "from_user_id": user["user_id"],
+        "from_name": user["name"],
+        "to_user_id": to_user_id,
+        "to_name": to_name,
+        "to_role": to_role,
+        "artisan_id": artisan_id,
+        "rating": data.rating,
+        "comment": data.comment,
+        "created_at": now_utc().isoformat(),
+    }
+    await db.reviews.insert_one(review)
+    review.pop("_id", None)
+    if to_role == "artisan" and artisan_id:
+        await recompute_artisan_rating(artisan_id)
+    return review
+
+@api_router.get("/reviews/artisan/{artisan_id}")
+async def artisan_reviews(artisan_id: str):
+    revs = await db.reviews.find({"artisan_id": artisan_id, "to_role": "artisan"}, {"_id": 0}).to_list(500)
+    revs.sort(key=lambda x: x.get("created_at", ""), reverse=True)
+    return revs
+
+# ----------------------------- Messaging -----------------------------
+
+def conv_view(c: dict, user_id: str):
+    c.pop("_id", None)
+    is_client = c.get("client_id") == user_id
+    c["other_name"] = c.get("artisan_name") if is_client else c.get("client_name")
+    return c
+
+@api_router.get("/conversations")
+async def list_conversations(user=Depends(get_current_user)):
+    uid = user["user_id"]
+    convs = await db.conversations.find({"$or": [{"client_id": uid}, {"artisan_user_id": uid}]}, {"_id": 0}).to_list(500)
+    convs.sort(key=lambda x: x.get("last_at", ""), reverse=True)
+    return [conv_view(c, uid) for c in convs]
+
+@api_router.get("/conversations/{conversation_id}")
+async def get_conversation(conversation_id: str, user=Depends(get_current_user)):
+    uid = user["user_id"]
+    conv = await db.conversations.find_one({"conversation_id": conversation_id}, {"_id": 0})
+    if not conv or uid not in (conv.get("client_id"), conv.get("artisan_user_id")):
+        raise HTTPException(status_code=403, detail="Conversation introuvable")
+    msgs = await db.messages.find({"conversation_id": conversation_id}, {"_id": 0}).to_list(2000)
+    msgs.sort(key=lambda x: x.get("created_at", ""))
+    return {"conversation": conv_view(conv, uid), "messages": msgs}
+
+@api_router.post("/conversations/{conversation_id}/messages")
+async def send_message(conversation_id: str, data: MessageInput, user=Depends(get_current_user)):
+    uid = user["user_id"]
+    conv = await db.conversations.find_one({"conversation_id": conversation_id}, {"_id": 0})
+    if not conv or uid not in (conv.get("client_id"), conv.get("artisan_user_id")):
+        raise HTTPException(status_code=403, detail="Conversation introuvable")
+    msg = {
+        "message_id": new_id("msg"),
+        "conversation_id": conversation_id,
+        "sender_id": uid,
+        "sender_name": user["name"],
+        "text": data.text,
+        "created_at": now_utc().isoformat(),
+    }
+    await db.messages.insert_one(msg)
+    await db.conversations.update_one(
+        {"conversation_id": conversation_id},
+        {"$set": {"last_message": data.text, "last_at": msg["created_at"]}},
+    )
+    msg.pop("_id", None)
+    return msg
 
 # ----------------------------- Seed -----------------------------
 
@@ -375,11 +577,17 @@ async def seed_data():
     if count == 0:
         for s in SEED_ARTISANS:
             cat = CATEGORY_MAP.get(s["trade"])
+            coords = CITY_COORDS.get(s["city"])
             doc = {
                 "artisan_id": new_id("art"),
                 "user_id": None,
                 "seed": True,
                 "is_subscribed": True,
+                "available": True,
+                "lat": coords[0] if coords else None,
+                "lng": coords[1] if coords else None,
+                "base_rating": s["rating"],
+                "base_reviews_count": s["reviews_count"],
                 "subscription_expires": (now_utc() + timedelta(days=365)).isoformat(),
                 "trade_name": cat["name"] if cat else s["trade"],
                 "phone": "+33 6 12 34 56 78",

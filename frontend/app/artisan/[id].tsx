@@ -12,6 +12,7 @@ import { useAuth } from "@/src/context/AuthContext";
 import { colors, font, fontSize, radius, spacing } from "@/src/theme";
 
 type Artisan = { artisan_id: string; name: string; title: string; bio: string; city: string; hourly_rate: number; rating: number; reviews_count: number; photo?: string; trade_name: string; phone?: string };
+type Review = { review_id: string; from_name: string; rating: number; comment: string; created_at: string };
 
 const SLOTS = ["08:00", "10:00", "12:00", "14:00", "16:00", "18:00"];
 const DAYS_FR = ["Dim", "Lun", "Mar", "Mer", "Jeu", "Ven", "Sam"];
@@ -35,6 +36,7 @@ export default function ArtisanDetail() {
   const { user } = useAuth();
 
   const [artisan, setArtisan] = useState<Artisan | null>(null);
+  const [reviews, setReviews] = useState<Review[]>([]);
   const [loading, setLoading] = useState(true);
   const days = nextDays(14);
   const [date, setDate] = useState(days[0].iso);
@@ -47,6 +49,7 @@ export default function ArtisanDetail() {
 
   useEffect(() => {
     api<Artisan>(`/artisans/${id}`, { auth: false }).then(setArtisan).catch(() => {}).finally(() => setLoading(false));
+    api<Review[]>(`/reviews/artisan/${id}`, { auth: false }).then(setReviews).catch(() => {});
   }, [id]);
 
   const openSheet = () => {
@@ -108,6 +111,25 @@ export default function ArtisanDetail() {
 
           <Txt weight="bold" size="lg" style={{ marginTop: spacing.xl, marginBottom: spacing.sm }}>À propos</Txt>
           <Txt color={colors.onSurfaceTertiary} style={{ lineHeight: 22 }}>{artisan.bio}</Txt>
+
+          <Txt weight="bold" size="lg" style={{ marginTop: spacing.xl, marginBottom: spacing.md }}>Avis clients ({reviews.length})</Txt>
+          {reviews.length === 0 ? (
+            <Txt color={colors.muted} size="sm">Aucun avis pour le moment.</Txt>
+          ) : (
+            reviews.map((r) => (
+              <View key={r.review_id} testID={`review-${r.review_id}`} style={styles.reviewCard}>
+                <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 4 }}>
+                  <Txt weight="semibold" size="base">{r.from_name}</Txt>
+                  <View style={{ flexDirection: "row", alignItems: "center" }}>
+                    {[1, 2, 3, 4, 5].map((n) => (
+                      <Ionicons key={n} name={n <= r.rating ? "star" : "star-outline"} size={13} color={colors.star} />
+                    ))}
+                  </View>
+                </View>
+                {r.comment ? <Txt color={colors.onSurfaceTertiary} size="sm">{r.comment}</Txt> : null}
+              </View>
+            ))
+          )}
 
           <Txt weight="bold" size="lg" style={{ marginTop: spacing.xl, marginBottom: spacing.md }}>Choisir une date</Txt>
           <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: spacing.sm }}>
@@ -200,6 +222,7 @@ const styles = StyleSheet.create({
   statsRow: { flexDirection: "row", alignItems: "center", backgroundColor: colors.surfaceSecondary, borderRadius: radius.lg, paddingVertical: spacing.lg },
   statDivider: { width: 1, height: 36, backgroundColor: colors.border },
   verified: { flexDirection: "row", alignItems: "center", marginTop: spacing.lg },
+  reviewCard: { backgroundColor: colors.surfaceSecondary, borderRadius: radius.md, padding: spacing.md, marginBottom: spacing.sm },
   dayCard: { width: 64, height: 84, borderRadius: radius.md, alignItems: "center", justifyContent: "center", gap: 2 },
   slotGrid: { flexDirection: "row", flexWrap: "wrap", gap: spacing.sm },
   slot: { width: "31%", height: 48, borderRadius: radius.md, borderWidth: 1.5, alignItems: "center", justifyContent: "center" },

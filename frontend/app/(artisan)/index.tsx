@@ -5,11 +5,12 @@ import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Txt, EmptyState, StatusBadge, Avatar } from "@/src/components/ui";
+import ReviewModal from "@/src/components/ReviewModal";
 import { useAuth } from "@/src/context/AuthContext";
 import { api } from "@/src/api";
 import { colors, radius, spacing } from "@/src/theme";
 
-type Booking = { booking_id: string; client_name: string; trade_name: string; date: string; slot: string; status: string; description: string };
+type Booking = { booking_id: string; conversation_id: string; client_name: string; trade_name: string; date: string; slot: string; status: string; description: string; reviewed: boolean };
 const FILTERS = [
   { key: "pending", label: "En attente" },
   { key: "accepted", label: "Acceptées" },
@@ -24,6 +25,7 @@ export default function ArtisanDashboard() {
   const [hasProfile, setHasProfile] = useState(true);
   const [filter, setFilter] = useState("pending");
   const [refreshing, setRefreshing] = useState(false);
+  const [reviewTarget, setReviewTarget] = useState<Booking | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -125,8 +127,32 @@ export default function ArtisanDashboard() {
                 <Txt weight="bold" color={colors.onSuccess}>Marquer comme terminée</Txt>
               </Pressable>
             )}
+            <View style={styles.actions}>
+              <Pressable testID={`msg-${item.booking_id}`} onPress={() => router.push({ pathname: "/chat/[id]", params: { id: item.conversation_id, name: item.client_name } })} style={[styles.actionBtn, { backgroundColor: colors.surfaceSecondary, flexDirection: "row" }]}>
+                <Ionicons name="chatbubble-ellipses-outline" size={16} color={colors.onSurface} />
+                <Txt weight="semibold" size="sm" style={{ marginLeft: 6 }}>Message</Txt>
+              </Pressable>
+              {item.status === "completed" && (item.reviewed ? (
+                <View style={[styles.actionBtn, { backgroundColor: "#D1FAE5", flexDirection: "row" }]}>
+                  <Ionicons name="checkmark-circle" size={16} color={colors.success} />
+                  <Txt weight="semibold" size="sm" color={colors.success} style={{ marginLeft: 6 }}>Avis publié</Txt>
+                </View>
+              ) : (
+                <Pressable testID={`review-${item.booking_id}`} onPress={() => setReviewTarget(item)} style={[styles.actionBtn, { backgroundColor: colors.brand, flexDirection: "row" }]}>
+                  <Ionicons name="star" size={16} color={colors.onSurfaceInverse} />
+                  <Txt weight="semibold" size="sm" color={colors.onSurfaceInverse} style={{ marginLeft: 6 }}>Noter le client</Txt>
+                </Pressable>
+              ))}
+            </View>
           </View>
         )}
+      />
+      <ReviewModal
+        visible={!!reviewTarget}
+        bookingId={reviewTarget?.booking_id || null}
+        targetName={reviewTarget?.client_name || ""}
+        onClose={() => setReviewTarget(null)}
+        onSubmitted={() => { setReviewTarget(null); load(); }}
       />
     </View>
   );
