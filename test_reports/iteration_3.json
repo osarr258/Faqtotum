@@ -1,0 +1,35 @@
+{
+  "summary": "Regression sweep PASS for production-readiness iteration 3. All 3 fixes verified: (1) Category route — Home 'Tout voir' (see-all-top) pushes to /category/all, search submit pushes to /category/all?q=plombier, tapping a category card pushes to /category/plombier — no navigation/runtime errors. (2) Avatar images — top-artisans list and /category/all list both render real artisan photos (Pexels src loaded, naturalWidth>0 on all 8 imgs). (3) react-native-keyboard-controller is silent (no install/runtime errors). Full flows OK: client login (client.test@proconnect.fr), Home gold 'J'ai un problème' card present, bottom tabs Accueil/Réservations/Messages/Profil all navigate. Profil tab correctly shows 'Camille Client' client profile with logout. Bookings tab lists TEST bookings with 'Avis publié' badges (no 'Noter' visible because both seeded completed bookings already reviewed in iteration 2). Messages tab lists 9 conversations, chat input + send-button works (sent 'Regression test TEST_msg'). FiltersModal opens on /category/plombier and toggle-view switches to map fallback ('Carte interactive disponible sur l'app mobile' + map-artisan items). AI diagnose flow (single call as instructed): 'ma chaudière fuit et ne chauffe plus' → Chauffagiste / Urgence / 1–4h / 150–400€ / 95% confidence + material list + safety tip + 'Trouver le meilleur pro' CTA — exactly as expected. Artisan login (pro.test@proconnect.fr): Espace Pro 'Marc' dashboard renders with KPIs (4 en attente, 3 acceptées), filters chips En attente/Acceptées/Terminées all clickable, artisan tabs Tableau de bord / Messages / Mon profil / Abonnement all render, Abonnement screen shows 'Abonnement actif' + ProConnect Premium 29€/mois + paiement simulé note. ZERO console errors and ZERO pageerror across all flows. Only one carry-over warning from iter2: 'shadow*' style props deprecated on RN Web (non-blocking).",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": [
+      {"component": "ui.tsx / multiple", "issue": "RN Web deprecation warning persists: '\"shadow*\" style props are deprecated. Use \"boxShadow\".' Non-blocking, carry-over from iter2."}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_proconnect_api.py",
+    "/app/backend/tests/test_phase2_features.py",
+    "/app/test_reports/pytest/pytest_results.xml",
+    "/app/test_reports/pytest/phase2_results.xml"
+  ],
+  "action_items": [
+    "(Optional) Migrate remaining shadow* style props to boxShadow to silence RN Web console warnings (cosmetic).",
+    "(Minor / nice-to-have) When the user is logged-in as client and directly navigates to /profile (page reload or shared URL), Expo Router may resolve the (artisan)/profile group instead of (client)/profile because both groups register the same route. Tab-nav works correctly; this only affects deep-link/reload. Consider adding a role-guard redirect in _layout to send users to the right group on direct URL hits."
+  ],
+  "critical_code_review_comments": [
+    "Both fixes implemented cleanly: /app/frontend/app/(client)/index.tsx uses router.push({pathname:'/category/[slug]', params:{slug:'all', q?}}) — correct typed-route signature. Avatar component (/app/frontend/src/components/ui.tsx L50-55) now renders <Image source={{uri}} contentFit='cover' transition={150}> when uri provided.",
+    "react-native-keyboard-controller pinned at 1.18.5 — no install/runtime errors observed on web preview.",
+    "All bottom tabs reachable; no red-screen, no runtime exceptions; map fallback for web (react-native-maps unsupported on web) works as intended.",
+    "Subscription remains SIMULATED (no real Stripe) — confirmed mocked per scope."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "skipped (backend already 50/50 per main agent)", "frontend": "100% (8/8 regression items verified)"},
+  "seed_data_creation": "No new seed data created. Existing TEST_booking / TEST_phase2 / TEST_not_completed bookings reused from iter2. Sent one new chat message 'Regression test TEST_msg' in conversation conv_0bc7afeb0ab5.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Auth screen has a UI subtlety: the auth.tsx default mode is 'login' but a stale localStorage state can leave it in 'register' mode. Always check body for 'Créer un compte'; if present, click [data-testid='toggle-mode'] before filling credentials. Also: do NOT use page.get_by_text('Se connecter') because the toggle-mode link also contains 'Se connecter' as text — use [data-testid='submit-button']. Both 'Noter' interactive reviews can only be exercised by first creating a NEW completed booking (seeded ones are already reviewed = 'Avis publié').",
+  "rca_of_issue": "N/A — regression sweep with no functional bugs. Two minor follow-ups noted: (a) RN Web shadow* deprecation, (b) direct-URL /profile may resolve to the artisan group when client is logged-in (route group ambiguity in Expo Router)."
+}

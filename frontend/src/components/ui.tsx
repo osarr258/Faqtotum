@@ -1,5 +1,6 @@
 import React from "react";
 import { Text, Pressable, View, ActivityIndicator, StyleSheet, TextProps, PressableProps } from "react-native";
+import { Image } from "expo-image";
 import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import { colors, font, fontSize, radius, spacing } from "@/src/theme";
@@ -49,10 +50,11 @@ export function Button({ title, variant = "primary", loading, icon, onPress, dis
 export function Avatar({ name, uri, size = 48 }: { name?: string; uri?: string | null; size?: number }) {
   const initials = (name || "?").split(" ").map((s) => s[0]).slice(0, 2).join("").toUpperCase();
   if (uri) {
-    return <View style={{ width: size, height: size, borderRadius: size / 2, overflow: "hidden" }}>
-      {/* expo-image used in callers; fallback simple */}
-      <View style={{ flex: 1, backgroundColor: colors.surfaceTertiary }} />
-    </View>;
+    return (
+      <View style={{ width: size, height: size, borderRadius: size / 2, overflow: "hidden", backgroundColor: colors.surfaceTertiary }}>
+        <Image source={{ uri }} style={{ width: "100%", height: "100%" }} contentFit="cover" transition={150} />
+      </View>
+    );
   }
   return (
     <View style={{ width: size, height: size, borderRadius: size / 2, backgroundColor: colors.brand, alignItems: "center", justifyContent: "center" }}>

@@ -37,7 +37,7 @@ export default function ClientHome() {
   const onRefresh = async () => { setRefreshing(true); await load(); setRefreshing(false); };
 
   const search = () => {
-    if (query.trim()) router.push({ pathname: "/category/all", params: { q: query.trim() } });
+    if (query.trim()) router.push({ pathname: "/category/[slug]", params: { slug: "all", q: query.trim() } });
   };
 
   return (
@@ -108,7 +108,7 @@ export default function ClientHome() {
 
         <View style={styles.sectionRow}>
           <Txt weight="bold" size="lg">Les mieux notés</Txt>
-          <Pressable testID="see-all-top" onPress={() => router.push({ pathname: "/category/all", params: {} })}>
+          <Pressable testID="see-all-top" onPress={() => router.push({ pathname: "/category/[slug]", params: { slug: "all" } })}>
             <Txt weight="semibold" size="sm" color={colors.muted}>Tout voir</Txt>
           </Pressable>
         </View>
