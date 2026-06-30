@@ -88,6 +88,13 @@ export default function Auth() {
 
         <Button testID="submit-button" title={mode === "register" ? "Créer mon compte" : "Se connecter"} loading={loading} onPress={submit} />
 
+        {mode === "register" && (
+          <View style={styles.reassure}>
+            <Ionicons name="checkmark-circle" size={13} color={colors.success} />
+            <Txt size="sm" color={colors.muted} style={{ marginLeft: 6 }}>Inscription gratuite • Sécurisé • Moins de 2 minutes</Txt>
+          </View>
+        )}
+
         <View style={styles.divider}>
           <View style={styles.line} />
           <Txt color={colors.muted} size="sm" style={{ marginHorizontal: spacing.md }}>ou</Txt>
@@ -108,13 +115,16 @@ export default function Auth() {
 }
 
 function Field({ icon, testID, ...props }: any) {
+  const [focused, setFocused] = useState(false);
   return (
-    <View style={styles.field}>
-      <Ionicons name={icon} size={20} color={colors.muted} />
+    <View style={[styles.field, focused && styles.fieldFocused]}>
+      <Ionicons name={icon} size={20} color={focused ? colors.brand : colors.muted} />
       <TextInput
         testID={testID}
         placeholderTextColor={colors.muted}
         style={styles.input}
+        onFocus={() => setFocused(true)}
+        onBlur={() => setFocused(false)}
         {...props}
       />
     </View>
@@ -125,7 +135,9 @@ const styles = StyleSheet.create({
   content: { paddingHorizontal: spacing.lg },
   back: { width: 40, height: 40, borderRadius: 20, backgroundColor: colors.surfaceSecondary, alignItems: "center", justifyContent: "center", marginBottom: spacing.md },
   roleTag: { flexDirection: "row", alignItems: "center", alignSelf: "flex-start", paddingHorizontal: spacing.md, paddingVertical: 6, borderRadius: radius.pill },
-  field: { flexDirection: "row", alignItems: "center", backgroundColor: colors.surfaceSecondary, borderRadius: radius.md, paddingHorizontal: spacing.lg, height: 56, marginBottom: spacing.md, gap: spacing.sm },
+  field: { flexDirection: "row", alignItems: "center", backgroundColor: colors.surfaceSecondary, borderRadius: radius.md, borderWidth: 1, borderColor: colors.border, paddingHorizontal: spacing.lg, height: 58, marginBottom: spacing.md, gap: spacing.sm },
+  fieldFocused: { borderColor: colors.brand, backgroundColor: colors.surfaceTertiary },
+  reassure: { flexDirection: "row", alignItems: "center", justifyContent: "center", marginTop: spacing.md },
   input: { flex: 1, fontFamily: font.medium, fontSize: fontSize.lg, color: colors.onSurface },
   divider: { flexDirection: "row", alignItems: "center", marginVertical: spacing.lg },
   line: { flex: 1, height: 1, backgroundColor: colors.border },

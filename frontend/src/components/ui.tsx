@@ -29,9 +29,10 @@ export function Button({ title, variant = "primary", loading, icon, onPress, dis
       testID={testID}
       onPress={handle}
       disabled={disabled || loading}
+      android_ripple={variant === "primary" ? { color: "rgba(0,0,0,0.12)" } : { color: "rgba(255,255,255,0.06)" }}
       style={({ pressed }) => [
         styles.btn,
-        { backgroundColor: bg, opacity: disabled ? 0.5 : pressed ? 0.85 : 1, borderWidth: variant === "outline" ? 1.5 : 0, borderColor: colors.borderStrong },
+        { backgroundColor: bg, opacity: disabled ? 0.5 : 1, transform: [{ scale: pressed ? 0.98 : 1 }], borderWidth: variant === "outline" ? 1.5 : 0, borderColor: colors.borderStrong },
         style as any,
       ]}
     >
