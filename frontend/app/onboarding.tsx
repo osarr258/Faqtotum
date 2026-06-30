@@ -27,7 +27,7 @@ export default function Onboarding() {
   return (
     <View style={styles.container}>
       <View style={styles.glow} />
-      <LinearGradient colors={["rgba(212,175,106,0.10)", "transparent"]} style={styles.glowGrad} pointerEvents="none" />
+      <LinearGradient colors={["rgba(212,175,106,0.10)", "transparent"]} style={[styles.glowGrad, { pointerEvents: "none" }]} />
 
       <ScrollView
         contentContainerStyle={[styles.content, { paddingTop: insets.top + spacing.xl, paddingBottom: insets.bottom + spacing["2xl"] }]}
