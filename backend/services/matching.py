@@ -99,17 +99,42 @@ def rank(artisans: List[Dict[str, Any]], ctx: Dict[str, Any]) -> List[Dict[str, 
 
 
 def explain(card: Dict[str, Any], eta_minutes: int | None = None) -> List[str]:
-    """Human-readable reasons WHY this pro was recommended (top signals)."""
+    """Human-readable reasons (FR) WHY this pro was recommended.
+    Reasons are ordered by signal strength using the score breakdown so the
+    most decisive factors surface first."""
+    bd = card.get("score_breakdown", {}) or {}
     reasons: List[str] = []
+
     if eta_minutes is not None:
         reasons.append(f"Disponible dans ~{eta_minutes} min")
     if card.get("rating"):
         reasons.append(f"Note {card['rating']:.1f}★ ({card.get('reviews_count', 0)} avis)")
+    if bd.get("distance", 0) >= 0.7 and card.get("distance_km") is not None:
+        reasons.append(f"Très proche ({card['distance_km']} km)")
+    if (card.get("trust_score") or 0) >= 90:
+        reasons.append(f"Trust Score élevé ({card['trust_score']}/100)")
     if (card.get("jobs_done") or 0) >= 20:
         reasons.append(f"{card['jobs_done']} missions réalisées")
     if (card.get("acceptance_rate") or 0) >= 85:
         reasons.append(f"{card['acceptance_rate']}% de taux d'acceptation")
-    if (card.get("score_breakdown", {}).get("price", 0)) >= 0.6:
+    if (card.get("response_min") or 99) <= 15:
+        reasons.append(f"Répond en ~{card['response_min']} min")
+    if bd.get("price", 0) >= 0.6:
         reasons.append("Excellent rapport qualité-prix")
     reasons.append("Assurance & identité vérifiées")
-    return reasons[:6]
+
+    # De-duplicate while preserving order, cap at 5 for a clean UI.
+    seen = set()
+    uniq = [r for r in reasons if not (r in seen or seen.add(r))]
+    return uniq[:5]
+
+
+def confidence_label(score_0_100: float) -> str:
+    """Map a raw match score to a customer-facing confidence label (FR)."""
+    if score_0_100 >= 85:
+        return "Correspondance excellente"
+    if score_0_100 >= 70:
+        return "Très bonne correspondance"
+    if score_0_100 >= 55:
+        return "Bonne correspondance"
+    return "Correspondance correcte"

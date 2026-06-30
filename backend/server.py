@@ -16,6 +16,7 @@ from pathlib import Path
 from pydantic import BaseModel, Field, EmailStr
 from typing import List, Optional
 from datetime import datetime, timezone, timedelta
+from services import matching, calendar_sync
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -143,6 +144,20 @@ class MissionInput(BaseModel):
 
 class BookInput(BaseModel):
     artisan_id: str
+
+class ProAcceptInput(BaseModel):
+    artisan_id: str
+
+class CalendarConnectInput(BaseModel):
+    provider: str
+
+class EquipmentInput(BaseModel):
+    name: str
+    category: str = ""
+    brand: str = ""
+    model: str = ""
+    installed_on: Optional[str] = None
+    notes: str = ""
 
 # ----------------------------- Categories -----------------------------
 
@@ -364,8 +379,10 @@ async def upsert_artisan_profile(data: ArtisanProfileInput, user=Depends(get_cur
             "trust_score": 80,
             "acceptance_rate": 100,
             "completion_rate": 100,
+            "cancellation_rate": 0,
             "response_min": 20,
             "jobs_done": 0,
+            "calendar_connected": False,
             "is_subscribed": False,
             "subscription_expires": None,
             "created_at": now_utc().isoformat(),
@@ -670,22 +687,27 @@ async def ai_transcribe(data: TranscribeInput, user=Depends(get_current_user)):
 
 URGENCY_LABELS = {"faible": "Faible", "moyenne": "Modérée", "elevee": "Élevée", "urgence": "Urgence"}
 
-def match_score(a: dict, lat, lng):
-    rating = a.get("rating", 4.5) or 4.5
-    trust = a.get("trust_score", 90) or 90
-    accept = a.get("acceptance_rate", 90) or 90
-    resp = a.get("response_min", 15) or 15
-    score = rating * 8 + trust * 0.4 + accept * 0.2 - resp * 0.1
-    if lat is not None and lng is not None and a.get("lat") is not None and a.get("lng") is not None:
-        d = haversine(lat, lng, a["lat"], a["lng"])
-        a["distance_km"] = round(d, 1)
-        score -= d * 0.25
-    if not a.get("available", True):
-        score -= 1000
-    return score
+
+def _match_ctx(artisans: list, urgency: str, lat, lng) -> dict:
+    rates = [a.get("hourly_rate") for a in artisans if a.get("hourly_rate")]
+    return {
+        "lat": lat, "lng": lng,
+        "urgency": urgency,
+        "rate_min": min(rates) if rates else 30.0,
+        "rate_max": max(rates) if rates else 70.0,
+    }
+
+
+def match_eta(c: dict):
+    d = c.get("distance_km")
+    return max(3, min(40, round((d if d is not None else 5) / 35 * 60)))
+
 
 def mission_artisan_card(a: dict):
-    return {
+    """Build a customer-facing pro card from an artisan enriched & scored by
+    the matching engine. Includes the AI explanation (FR) but NEVER the raw
+    score weights — only a friendly confidence label."""
+    card = {
         "artisan_id": a["artisan_id"],
         "name": a.get("name") or a.get("title"),
         "title": a.get("title"),
@@ -702,27 +724,31 @@ def mission_artisan_card(a: dict):
         "lat": a.get("lat"),
         "lng": a.get("lng"),
     }
+    card["eta_minutes"] = match_eta(card)
+    ms = a.get("match_score")
+    if ms is not None:
+        card["match_score"] = ms
+        card["match_label"] = matching.confidence_label(ms)
+    card["match_reasons"] = matching.explain(a, card["eta_minutes"])
+    return card
 
-def match_eta(c: dict):
-    d = c.get("distance_km")
-    return max(3, min(40, round((d if d is not None else 5) / 35 * 60)))
 
 @api_router.post("/missions")
 async def create_mission(data: MissionInput, user=Depends(get_current_user)):
     artisans = await db.artisan_profiles.find({"is_subscribed": True, "trade": data.trade}, {"_id": 0}).to_list(500)
     artisans = [await enrich_artisan(a) for a in artisans]
-    ranked = sorted(artisans, key=lambda a: match_score(a, data.lat, data.lng), reverse=True)
-    if not ranked:
+    if not artisans:
         raise HTTPException(status_code=404, detail="Aucun professionnel disponible pour ce métier.")
+    ctx = _match_ctx(artisans, data.urgency, data.lat, data.lng)
+    ranked = matching.rank(artisans, ctx)
     client_lat = data.lat if data.lat is not None else 48.8566
     client_lng = data.lng if data.lng is not None else 2.3522
     candidates = [a["artisan_id"] for a in ranked]
-    top_matches = []
-    for a in ranked[:3]:
-        card = mission_artisan_card(a)
-        card["eta_minutes"] = match_eta(card)
-        top_matches.append(card)
+    is_emergency = data.urgency == "urgence"
+    top_matches = [mission_artisan_card(a) for a in ranked[:3]]
     top = ranked[0]
+    # Emergency mode: broadcast to several pros simultaneously (first to accept wins).
+    notified_pros = [a["artisan_id"] for a in ranked[:5]] if is_emergency else []
     mission = {
         "mission_id": new_id("msn"),
         "client_id": user["user_id"],
@@ -731,6 +757,7 @@ async def create_mission(data: MissionInput, user=Depends(get_current_user)):
         "trade_name": top.get("trade_name"),
         "urgency": data.urgency,
         "urgency_label": URGENCY_LABELS.get(data.urgency, "Modérée"),
+        "mode": "emergency" if is_emergency else "standard",
         "diagnosis": data.diagnosis,
         "price_min": data.price_min,
         "price_max": data.price_max,
@@ -738,11 +765,13 @@ async def create_mission(data: MissionInput, user=Depends(get_current_user)):
         "client_lng": client_lng,
         "candidates": candidates,
         "candidate_index": 0,
+        "notified_pros": notified_pros,
         "top_matches": top_matches,
         "artisan": top_matches[0],
-        "status": "proposed",
+        "status": "searching" if is_emergency else "proposed",
         "eta_minutes": None,
         "accepted_at": None,
+        "accepted_by": None,
         "created_at": now_utc().isoformat(),
     }
     await db.missions.insert_one(mission)
@@ -777,7 +806,11 @@ async def _set_candidate(mission: dict, idx: int):
     aid = mission["candidates"][idx]
     a = await db.artisan_profiles.find_one({"artisan_id": aid}, {"_id": 0})
     a = await enrich_artisan(a)
-    a["distance_km"] = round(haversine(mission["client_lat"], mission["client_lng"], a["lat"], a["lng"]), 1) if a.get("lat") else None
+    ctx = {"lat": mission["client_lat"], "lng": mission["client_lng"], "urgency": mission.get("urgency", "moyenne")}
+    s, breakdown, d = matching.score(a, ctx)
+    a["match_score"] = s
+    a["score_breakdown"] = breakdown
+    a["distance_km"] = d
     card = mission_artisan_card(a)
     await db.missions.update_one({"mission_id": mission["mission_id"]}, {"$set": {"candidate_index": idx, "artisan": card, "status": "proposed"}})
     return card
@@ -850,8 +883,175 @@ async def complete_mission(mission_id: str, user=Depends(get_current_user)):
     m = await db.missions.find_one({"mission_id": mission_id}, {"_id": 0})
     if not m or m["client_id"] != user["user_id"]:
         raise HTTPException(status_code=404, detail="Mission introuvable")
-    await db.missions.update_one({"mission_id": mission_id}, {"$set": {"status": "completed"}})
-    return {"status": "completed"}
+    await db.missions.update_one({"mission_id": mission_id}, {"$set": {"status": "completed", "completed_at": now_utc().isoformat()}})
+    artisan = m.get("artisan", {}) or {}
+    pmin = m.get("price_min") or 0
+    pmax = m.get("price_max") or 0
+    amount = round((pmin + pmax) / 2) if (pmin or pmax) else None
+    # --- Future-ready records: invoice + guarantee + home passport history ---
+    invoice = {
+        "invoice_id": new_id("inv"),
+        "client_id": user["user_id"],
+        "mission_id": mission_id,
+        "artisan_id": artisan.get("artisan_id"),
+        "artisan_name": artisan.get("name"),
+        "trade_name": m.get("trade_name"),
+        "amount": amount,
+        "currency": "EUR",
+        "status": "issued",
+        "issued_at": now_utc().isoformat(),
+    }
+    await db.invoices.insert_one(invoice)
+    guarantee = {
+        "guarantee_id": new_id("grt"),
+        "client_id": user["user_id"],
+        "mission_id": mission_id,
+        "artisan_id": artisan.get("artisan_id"),
+        "artisan_name": artisan.get("name"),
+        "trade_name": m.get("trade_name"),
+        "label": "Garantie satisfaction 12 mois",
+        "starts_at": now_utc().isoformat(),
+        "expires_at": (now_utc() + timedelta(days=365)).isoformat(),
+        "status": "active",
+    }
+    await db.guarantees.insert_one(guarantee)
+    await _append_passport_history(user["user_id"], {
+        "type": "intervention",
+        "mission_id": mission_id,
+        "trade_name": m.get("trade_name"),
+        "artisan_name": artisan.get("name"),
+        "summary": (m.get("diagnosis") or {}).get("problem", m.get("trade_name")),
+        "amount": amount,
+        "invoice_id": invoice["invoice_id"],
+        "guarantee_id": guarantee["guarantee_id"],
+        "date": now_utc().isoformat(),
+    })
+    invoice.pop("_id", None)
+    return {"status": "completed", "invoice_id": invoice["invoice_id"], "guarantee_id": guarantee["guarantee_id"]}
+
+# ----------------------------- Emergency mode (first-to-accept wins) -----------------------------
+
+@api_router.post("/missions/{mission_id}/pro_accept")
+async def pro_accept_mission(mission_id: str, data: ProAcceptInput):
+    """Called by a notified pro in emergency mode. First valid acceptance wins;
+    later attempts get 409. (Pro-side auth handled by their app; open here so
+    the broadcast/accept architecture can be exercised.)"""
+    m = await db.missions.find_one({"mission_id": mission_id}, {"_id": 0})
+    if not m:
+        raise HTTPException(status_code=404, detail="Mission introuvable")
+    if m.get("mode") != "emergency":
+        raise HTTPException(status_code=400, detail="Cette mission n'est pas en mode urgence")
+    if data.artisan_id not in (m.get("notified_pros") or []):
+        raise HTTPException(status_code=403, detail="Professionnel non sollicité pour cette urgence")
+    if m.get("accepted_by"):
+        raise HTTPException(status_code=409, detail="Mission déjà acceptée par un autre professionnel")
+    a = await db.artisan_profiles.find_one({"artisan_id": data.artisan_id}, {"_id": 0})
+    if not a:
+        raise HTTPException(status_code=404, detail="Professionnel introuvable")
+    a = await enrich_artisan(a)
+    ctx = {"lat": m["client_lat"], "lng": m["client_lng"], "urgency": "urgence"}
+    s, breakdown, d = matching.score(a, ctx)
+    a["match_score"] = s; a["score_breakdown"] = breakdown; a["distance_km"] = d
+    card = mission_artisan_card(a)
+    a_lat = a.get("lat") if a.get("lat") is not None else m["client_lat"] + 0.05
+    a_lng = a.get("lng") if a.get("lng") is not None else m["client_lng"] + 0.05
+    dist = haversine(a_lat, a_lng, m["client_lat"], m["client_lng"])
+    eta = max(3, min(40, round(dist / 35 * 60))) if dist >= 0.1 else 6
+    upd = {"status": "en_route", "accepted_at": now_utc().isoformat(), "accepted_by": data.artisan_id,
+           "eta_minutes": eta, "artisan_start_lat": a_lat, "artisan_start_lng": a_lng, "artisan": card}
+    res = await db.missions.update_one(
+        {"mission_id": mission_id, "accepted_by": None},
+        {"$set": upd},
+    )
+    if res.modified_count == 0:
+        raise HTTPException(status_code=409, detail="Mission déjà acceptée par un autre professionnel")
+    return {"status": "en_route", "artisan": card, "eta_minutes": eta}
+
+# ----------------------------- Calendar sync (architecture, MOCKED) -----------------------------
+
+@api_router.get("/artisans/{artisan_id}/availability")
+async def artisan_availability(artisan_id: str, days: int = 7):
+    artisan = await db.artisan_profiles.find_one({"artisan_id": artisan_id}, {"_id": 0})
+    if not artisan:
+        raise HTTPException(status_code=404, detail="Artisan introuvable")
+    # Pull our own bookings to mark those slots busy (best-effort).
+    bks = await db.bookings.find({"artisan_id": artisan_id, "status": {"$in": ["pending", "accepted"]}}, {"_id": 0}).to_list(500)
+    busy = []
+    for b in bks:
+        try:
+            busy.append({"date": b.get("date"), "hour": int((b.get("slot") or "0").split(":")[0])})
+        except Exception:
+            pass
+    calendar = calendar_sync.generate_availability(artisan_id, days=days, busy=busy)
+    nxt = calendar_sync.next_available(artisan_id, days=days, busy=busy)
+    return {
+        "artisan_id": artisan_id,
+        "calendar_connected": bool(artisan.get("calendar_connected")),
+        "provider": artisan.get("calendar_provider"),
+        "next_available": nxt,
+        "days": calendar,
+    }
+
+@api_router.post("/artisans/me/calendar/connect")
+async def connect_calendar(data: CalendarConnectInput, user=Depends(get_current_user)):
+    profile = await db.artisan_profiles.find_one({"user_id": user["user_id"]})
+    if not profile:
+        raise HTTPException(status_code=404, detail="Créez d'abord votre profil")
+    try:
+        conn = calendar_sync.connect_provider(data.provider)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    await db.artisan_profiles.update_one(
+        {"artisan_id": profile["artisan_id"]},
+        {"$set": {"calendar_connected": True, "calendar_provider": conn["provider"], "calendar_connection": conn}},
+    )
+    return conn
+
+# ----------------------------- Home Passport / Invoices / Guarantees -----------------------------
+
+async def _append_passport_history(client_id: str, entry: dict):
+    await db.home_passports.update_one(
+        {"client_id": client_id},
+        {"$setOnInsert": {"client_id": client_id, "created_at": now_utc().isoformat()},
+         "$push": {"maintenance_history": {"$each": [entry], "$position": 0}}},
+        upsert=True,
+    )
+
+@api_router.get("/home-passport")
+async def get_home_passport(user=Depends(get_current_user)):
+    p = await db.home_passports.find_one({"client_id": user["user_id"]}, {"_id": 0})
+    if not p:
+        p = {"client_id": user["user_id"], "equipment": [], "maintenance_history": [], "guarantees": []}
+    else:
+        p.setdefault("equipment", [])
+        p.setdefault("maintenance_history", [])
+    guarantees = await db.guarantees.find({"client_id": user["user_id"]}, {"_id": 0}).to_list(500)
+    guarantees.sort(key=lambda x: x.get("starts_at", ""), reverse=True)
+    p["guarantees"] = guarantees
+    return p
+
+@api_router.post("/home-passport/equipment")
+async def add_equipment(data: EquipmentInput, user=Depends(get_current_user)):
+    item = {"equipment_id": new_id("eqp"), **data.dict(), "added_at": now_utc().isoformat()}
+    await db.home_passports.update_one(
+        {"client_id": user["user_id"]},
+        {"$setOnInsert": {"client_id": user["user_id"], "created_at": now_utc().isoformat()},
+         "$push": {"equipment": item}},
+        upsert=True,
+    )
+    return item
+
+@api_router.get("/invoices/mine")
+async def my_invoices(user=Depends(get_current_user)):
+    invs = await db.invoices.find({"client_id": user["user_id"]}, {"_id": 0}).to_list(500)
+    invs.sort(key=lambda x: x.get("issued_at", ""), reverse=True)
+    return invs
+
+@api_router.get("/guarantees/mine")
+async def my_guarantees(user=Depends(get_current_user)):
+    grs = await db.guarantees.find({"client_id": user["user_id"]}, {"_id": 0}).to_list(500)
+    grs.sort(key=lambda x: x.get("starts_at", ""), reverse=True)
+    return grs
 
 # ----------------------------- Seed -----------------------------
 
@@ -882,7 +1082,7 @@ async def seed_data():
 
     count = await db.artisan_profiles.count_documents({"seed": True})
     if count == 0:
-        for s in SEED_ARTISANS:
+        for i, s in enumerate(SEED_ARTISANS):
             cat = CATEGORY_MAP.get(s["trade"])
             coords = CITY_COORDS.get(s["city"])
             doc = {
@@ -896,9 +1096,11 @@ async def seed_data():
                 "base_rating": s["rating"],
                 "base_reviews_count": s["reviews_count"],
                 "trust_score": min(99, round(s["rating"] * 19 + 4)),
-                "acceptance_rate": 92,
-                "completion_rate": 97,
-                "response_min": 12,
+                "acceptance_rate": 88 + (i % 6) * 2,           # 88..98
+                "completion_rate": 95 + (i % 5),               # 95..99
+                "cancellation_rate": (i % 4),                  # 0..3 %
+                "response_min": 8 + (i % 5) * 4,               # 8..24 min
+                "calendar_connected": False,
                 "jobs_done": s["reviews_count"],
                 "subscription_expires": (now_utc() + timedelta(days=365)).isoformat(),
                 "trade_name": cat["name"] if cat else s["trade"],
@@ -908,6 +1110,21 @@ async def seed_data():
             }
             await db.artisan_profiles.insert_one(doc)
         logger.info("Seeded artisans")
+
+    # Backfill extended stats on pre-existing seeds (idempotent migration).
+    missing = await db.artisan_profiles.find({"seed": True, "cancellation_rate": {"$exists": False}}, {"_id": 0, "artisan_id": 1}).to_list(500)
+    for i, a in enumerate(missing):
+        await db.artisan_profiles.update_one(
+            {"artisan_id": a["artisan_id"]},
+            {"$set": {
+                "cancellation_rate": (i % 4),
+                "acceptance_rate": 88 + (i % 6) * 2,
+                "response_min": 8 + (i % 5) * 4,
+                "calendar_connected": False,
+            }},
+        )
+    if missing:
+        logger.info(f"Backfilled stats on {len(missing)} seeds")
 
 app.include_router(api_router)
 

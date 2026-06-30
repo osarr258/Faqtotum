@@ -101,3 +101,82 @@
 #====================================================================================================
 # Testing Data - Main Agent and testing sub agent both should log testing data below this section
 #====================================================================================================
+## user_problem_statement: "Construire le moteur d'intelligence backend de ProConnect (architecte IA): moteur de matching pondéré multi-critères avec explications IA en français, mode urgence (broadcast multi-pros, premier qui accepte gagne), architecture de synchronisation calendrier (MOCKÉE), et modèles future-ready (Home Passport, Factures, Garanties). Design intact (dark/or champagne)."
+
+## backend:
+##   - task: "Moteur de matching IA pondéré + explications FR (/missions)"
+##     implemented: true
+##     working: true
+##     file: "backend/services/matching.py, backend/server.py"
+##     stuck_count: 0
+##     priority: "high"
+##     needs_retesting: true
+##     status_history:
+##         -working: true
+##         -agent: "main"
+##         -comment: "Branché matching.rank() dans POST /missions. top_matches incluent match_score, match_label (confidence_label) et match_reasons (FR). _set_candidate (refuse->next) re-score le candidat. Vérifié via curl: raisons FR correctes, scores variés."
+##   - task: "Mode urgence: broadcast multi-pros + premier qui accepte gagne"
+##     implemented: true
+##     working: true
+##     file: "backend/server.py"
+##     stuck_count: 0
+##     priority: "high"
+##     needs_retesting: true
+##     status_history:
+##         -working: true
+##         -agent: "main"
+##         -comment: "urgency=urgence => mode emergency, status searching, notified_pros (top 5). POST /missions/{id}/pro_accept: premier gagne (en_route), 2e renvoie 409. Vérifié via curl."
+##   - task: "Architecture synchronisation calendrier (MOCKÉE)"
+##     implemented: true
+##     working: true
+##     file: "backend/services/calendar_sync.py, backend/server.py"
+##     stuck_count: 0
+##     priority: "medium"
+##     needs_retesting: true
+##     status_history:
+##         -working: true
+##         -agent: "main"
+##         -comment: "GET /artisans/{id}/availability (créneaux générés, busy depuis bookings), POST /artisans/me/calendar/connect (mock google/outlook/apple). Vérifié via curl."
+##   - task: "Modèles future-ready: Home Passport, Factures, Garanties"
+##     implemented: true
+##     working: true
+##     file: "backend/server.py"
+##     stuck_count: 0
+##     priority: "medium"
+##     needs_retesting: true
+##     status_history:
+##         -working: true
+##         -agent: "main"
+##         -comment: "complete_mission crée facture + garantie 12 mois + entrée maintenance_history. GET /home-passport, POST /home-passport/equipment, GET /invoices/mine, GET /guarantees/mine. Vérifié via curl."
+
+## frontend:
+##   - task: "Écran matching: affichage raisons IA + label de correspondance"
+##     implemented: true
+##     working: "NA"
+##     file: "frontend/app/matching/[id].tsx"
+##     stuck_count: 0
+##     priority: "medium"
+##     needs_retesting: true
+##     status_history:
+##         -working: "NA"
+##         -agent: "main"
+##         -comment: "Ajout section 'Pourquoi l'IA le recommande' (match_reasons) + tag match_label sur cartes non-top. Lint OK. Design inchangé."
+
+## metadata:
+##   created_by: "main_agent"
+##   version: "2.0"
+##   test_sequence: 1
+##   run_ui: false
+
+## test_plan:
+##   current_focus:
+##     - "Moteur de matching IA pondéré + explications FR (/missions)"
+##     - "Mode urgence: broadcast multi-pros + premier qui accepte gagne"
+##     - "Modèles future-ready: Home Passport, Factures, Garanties"
+##   stuck_tasks: []
+##   test_all: false
+##   test_priority: "high_first"
+
+## agent_communication:
+##     -agent: "main"
+##     -message: "Couche d'intelligence backend implémentée. Tester en priorité backend: POST /missions (standard + urgence) renvoie top_matches avec match_score/match_label/match_reasons FR; flux refuse/confirm; POST /missions/{id}/pro_accept (premier gagne, 409 sinon); GET /artisans/{id}/availability; POST /artisans/me/calendar/connect; complete_mission -> invoice+guarantee+passport; GET /home-passport, /invoices/mine, /guarantees/mine. Identifiants dans /app/memory/test_credentials.md."

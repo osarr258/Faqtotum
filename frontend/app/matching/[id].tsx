@@ -14,6 +14,7 @@ type Artisan = {
   artisan_id: string; name: string; title: string; photo?: string; trade_name: string;
   rating: number; reviews_count: number; trust_score: number; acceptance_rate: number;
   response_min: number; distance_km?: number | null; city?: string; eta_minutes?: number;
+  match_label?: string; match_reasons?: string[];
 };
 type Mission = { mission_id: string; status: string; urgency_label: string; price_min: number; price_max: number; top_matches: Artisan[]; candidates: string[] };
 
@@ -79,6 +80,12 @@ export default function Matching() {
                 <Txt weight="bold" size="sm" color={colors.onBrand} style={{ marginLeft: 4 }}>Recommandé par l&apos;IA</Txt>
               </View>
             )}
+            {i !== 0 && a.match_label ? (
+              <View style={styles.labelTag}>
+                <Ionicons name="sparkles" size={11} color={colors.brand} />
+                <Txt weight="semibold" size="sm" color={colors.brand} style={{ marginLeft: 4 }}>{a.match_label}</Txt>
+              </View>
+            ) : null}
             <View style={styles.proTop}>
               {a.photo ? <Image source={{ uri: a.photo }} style={styles.proImg} contentFit="cover" transition={200} /> : <Avatar name={a.name} size={64} />}
               <View style={{ flex: 1, marginLeft: spacing.md }}>
@@ -102,6 +109,21 @@ export default function Matching() {
               <Metric icon="shield-checkmark" label="Trust" value={`${a.trust_score}/100`} />
               <Metric icon="checkmark-done" label="Accept." value={`${a.acceptance_rate}%`} />
             </View>
+
+            {a.match_reasons && a.match_reasons.length > 0 ? (
+              <View style={styles.reasonsBox}>
+                <View style={{ flexDirection: "row", alignItems: "center", marginBottom: spacing.sm }}>
+                  <Ionicons name="bulb" size={14} color={colors.brand} />
+                  <Txt weight="bold" size="sm" color={colors.brand} style={{ marginLeft: 6 }}>Pourquoi l&apos;IA le recommande</Txt>
+                </View>
+                {a.match_reasons.map((r, ri) => (
+                  <View key={ri} style={styles.reasonRow}>
+                    <Ionicons name="checkmark-circle" size={14} color={colors.brand} />
+                    <Txt size="sm" color={colors.onSurfaceSecondary} style={{ marginLeft: 6, flex: 1 }}>{r}</Txt>
+                  </View>
+                ))}
+              </View>
+            ) : null}
 
             <Button testID={`book-${a.artisan_id}`} title="Réserver ce professionnel" icon="calendar" loading={bookingId === a.artisan_id} onPress={() => book(a.artisan_id)} style={{ marginTop: spacing.lg }} />
           </Animated.View>
@@ -129,6 +151,9 @@ const styles = StyleSheet.create({
   proCard: { backgroundColor: colors.surfaceSecondary, borderRadius: radius.lg, padding: spacing.lg, borderWidth: 1, borderColor: colors.border, marginBottom: spacing.md, ...shadow.card },
   bestCard: { borderColor: colors.brand + "66" },
   bestTag: { flexDirection: "row", alignItems: "center", alignSelf: "flex-start", backgroundColor: colors.brand, paddingHorizontal: spacing.sm, paddingVertical: 3, borderRadius: radius.pill, marginBottom: spacing.md },
+  labelTag: { flexDirection: "row", alignItems: "center", alignSelf: "flex-start", backgroundColor: colors.brand + "1A", paddingHorizontal: spacing.sm, paddingVertical: 3, borderRadius: radius.pill, marginBottom: spacing.md },
+  reasonsBox: { marginTop: spacing.lg, backgroundColor: colors.brand + "0F", borderRadius: radius.md, padding: spacing.md, borderWidth: 1, borderColor: colors.brand + "26" },
+  reasonRow: { flexDirection: "row", alignItems: "flex-start", marginBottom: 4 },
   proTop: { flexDirection: "row", alignItems: "center" },
   proImg: { width: 64, height: 64, borderRadius: radius.md },
   metrics: { flexDirection: "row", marginTop: spacing.lg, paddingTop: spacing.lg, borderTopWidth: 1, borderTopColor: colors.border },
