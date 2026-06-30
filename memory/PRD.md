@@ -21,6 +21,14 @@ Application de mise en relation à la Uber/Airbnb connectant les clients (partic
 - Tabs client: Accueil, Réservations, Profil. Tabs artisan: Tableau de bord, Mon profil, Abonnement.
 
 ## Implemented (2026-06-30)
+### Phase 3 — AI-first premium pivot (latest)
+- Refonte design complète: thème premium DARK + accents OR CHAMPAGNE (Revolut/Apple), Plus Jakarta Sans.
+- Bouton "J'ai un problème" + écran Diagnostic IA: texte + photos (expo-image-picker) + voix (expo-audio → Whisper /ai/transcribe). GPT-4o vision (/ai/diagnose) → problème, métier, urgence, durée, fourchette de prix, matériel, score de confiance, conseil sécurité.
+- Matching IA automatique (/missions): scoring (note, Trust Score, acceptation, réponse, distance) → propose LE meilleur pro; refuser → pro suivant.
+- Mission flow: confirmer → suivi GPS/ETA temps réel simulé (/missions/{id}) avec carte (react-native-maps natif + fallback web) + compte à rebours + bouton terminer.
+- Trust Score par artisan; IA via clé universelle Emergent (GPT-4o + Whisper).
+
+### Phase 1 & 2
 - Auth email/password + Google (Emergent), rôles client/artisan.
 - Catégories de métiers (12), 12 artisans seedés.
 - Client: home (recherche + grille catégories + top artisans), liste/recherche artisans, fiche artisan + réservation créneau, mes réservations.
@@ -32,5 +40,8 @@ Application de mise en relation à la Uber/Airbnb connectant les clients (partic
 - P2: Notifications, upload photo profil/portfolio, historique gains artisan.
 
 ## Next tasks
-- Brancher un vrai paiement (Stripe) pour l'abonnement artisan.
-- Système d'avis et de messagerie.
+- Stripe Connect (paiement + escrow + commission) — phase suivante.
+- Rôles Admin/Support/Finance/Modération + dashboard admin (carte temps réel, litiges, stats, monitoring IA).
+- Acceptation réelle des missions côté artisan + notifications push.
+- Home Digital Passport (historique entretien, garanties, équipements).
+- GPS réel (artisan en mouvement), mode Urgence multi-pros simultané.

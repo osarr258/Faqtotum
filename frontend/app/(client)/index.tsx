@@ -55,6 +55,22 @@ export default function ClientHome() {
           <Avatar name={user?.name} size={44} />
         </View>
 
+        <Pressable testID="problem-button" onPress={() => router.push("/diagnose")} style={styles.problemBtn}>
+          <LinearGradient colors={["#E7C988", "#C9A24B", "#A87B2E"]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={styles.problemGrad}>
+            <View style={{ flex: 1 }}>
+              <View style={styles.aiTag}>
+                <Ionicons name="sparkles" size={12} color={colors.onBrand} />
+                <Txt weight="bold" size="sm" color={colors.onBrand} style={{ marginLeft: 4 }}>Diagnostic IA</Txt>
+              </View>
+              <Txt weight="extrabold" size="2xl" color={colors.onBrand} style={{ marginTop: spacing.sm }}>J&apos;ai un problème</Txt>
+              <Txt size="sm" color="#3A2E12" style={{ marginTop: 2 }}>Décrivez, photographiez ou parlez — l&apos;IA trouve le meilleur pro.</Txt>
+            </View>
+            <View style={styles.problemIcon}>
+              <Ionicons name="flash" size={28} color={colors.onBrand} />
+            </View>
+          </LinearGradient>
+        </Pressable>
+
         <View style={styles.searchBar}>
           <Ionicons name="search" size={20} color={colors.muted} />
           <TextInput
@@ -109,12 +125,12 @@ export default function ClientHome() {
               <LinearGradient colors={["transparent", "rgba(24,24,27,0.85)"]} style={styles.topScrim} />
               <View style={styles.topInfo}>
                 <View style={styles.tradePill}>
-                  <Txt weight="semibold" size="sm" color={colors.onSurfaceInverse}>{a.trade_name}</Txt>
+                  <Txt weight="semibold" size="sm" color={colors.textInverse}>{a.trade_name}</Txt>
                 </View>
-                <Txt weight="bold" size="lg" color={colors.onSurfaceInverse} numberOfLines={1}>{a.name}</Txt>
+                <Txt weight="bold" size="lg" color={colors.textInverse} numberOfLines={1}>{a.name}</Txt>
                 <View style={{ flexDirection: "row", alignItems: "center", marginTop: 2 }}>
                   <Ionicons name="star" size={13} color={colors.star} />
-                  <Txt weight="semibold" size="sm" color={colors.onSurfaceInverse} style={{ marginLeft: 4 }}>{a.rating.toFixed(1)}</Txt>
+                  <Txt weight="semibold" size="sm" color={colors.textInverse} style={{ marginLeft: 4 }}>{a.rating.toFixed(1)}</Txt>
                   <Txt size="sm" color="#D4D4D8" style={{ marginLeft: 8 }}>{a.hourly_rate}€/h</Txt>
                 </View>
               </View>
@@ -128,6 +144,10 @@ export default function ClientHome() {
 
 const styles = StyleSheet.create({
   header: { flexDirection: "row", alignItems: "center", paddingHorizontal: spacing.lg, marginBottom: spacing.lg },
+  problemBtn: { marginHorizontal: spacing.lg, marginBottom: spacing.lg, borderRadius: radius.lg, overflow: "hidden", ...shadow.card },
+  problemGrad: { flexDirection: "row", alignItems: "center", padding: spacing.lg },
+  aiTag: { flexDirection: "row", alignItems: "center", alignSelf: "flex-start", backgroundColor: "rgba(255,255,255,0.35)", paddingHorizontal: spacing.sm, paddingVertical: 3, borderRadius: radius.pill },
+  problemIcon: { width: 52, height: 52, borderRadius: 26, backgroundColor: "rgba(255,255,255,0.3)", alignItems: "center", justifyContent: "center", marginLeft: spacing.md },
   searchBar: { flexDirection: "row", alignItems: "center", marginHorizontal: spacing.lg, backgroundColor: colors.surfaceSecondary, borderRadius: radius.md, paddingHorizontal: spacing.lg, height: 52, gap: spacing.sm },
   searchInput: { flex: 1, fontFamily: font.medium, fontSize: fontSize.base, color: colors.onSurface },
   sectionTitle: { paddingHorizontal: spacing.lg, marginTop: spacing.xl, marginBottom: spacing.md },

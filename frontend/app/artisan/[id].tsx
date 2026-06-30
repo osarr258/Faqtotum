@@ -87,8 +87,8 @@ export default function ArtisanDetail() {
             <Ionicons name="chevron-back" size={22} color={colors.onSurface} />
           </Pressable>
           <View style={styles.heroInfo}>
-            <View style={styles.tradePill}><Txt weight="semibold" size="sm" color={colors.onSurfaceInverse}>{artisan.trade_name}</Txt></View>
-            <Txt weight="extrabold" size="3xl" color={colors.onSurfaceInverse}>{artisan.name}</Txt>
+            <View style={styles.tradePill}><Txt weight="semibold" size="sm" color={colors.textInverse}>{artisan.trade_name}</Txt></View>
+            <Txt weight="extrabold" size="3xl" color={colors.textInverse}>{artisan.name}</Txt>
             <Txt size="base" color="#E4E4E7">{artisan.title}</Txt>
           </View>
         </View>

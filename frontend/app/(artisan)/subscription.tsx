@@ -65,14 +65,14 @@ export default function Subscription() {
           <View style={styles.planTag}><Txt weight="bold" size="sm" color={colors.onSurfaceInverse}>POPULAIRE</Txt></View>
           <Txt weight="bold" size="lg" color="#D4D4D8">ProConnect Premium</Txt>
           <View style={{ flexDirection: "row", alignItems: "flex-end", marginTop: spacing.sm }}>
-            <Txt weight="extrabold" size="4xl" color={colors.onSurfaceInverse}>29€</Txt>
+            <Txt weight="extrabold" size="4xl" color={colors.textInverse}>29€</Txt>
             <Txt size="base" color="#A1A1AA" style={{ marginBottom: 6, marginLeft: 4 }}>/ mois</Txt>
           </View>
           <View style={{ marginTop: spacing.lg, gap: spacing.md }}>
             {BENEFITS.map((b) => (
               <View key={b} style={{ flexDirection: "row", alignItems: "center" }}>
                 <Ionicons name="checkmark-circle" size={20} color={colors.success} />
-                <Txt color={colors.onSurfaceInverse} style={{ marginLeft: spacing.sm, flex: 1 }}>{b}</Txt>
+                <Txt color={colors.textInverse} style={{ marginLeft: spacing.sm, flex: 1 }}>{b}</Txt>
               </View>
             ))}
           </View>

@@ -1,4 +1,5 @@
 import { Stack } from "expo-router";
+import { StatusBar } from "expo-status-bar";
 import * as SplashScreen from "expo-splash-screen";
 import { useEffect } from "react";
 import { LogBox } from "react-native";
@@ -36,7 +37,8 @@ export default function RootLayout() {
       <KeyboardProvider>
         <SafeAreaProvider>
           <AuthProvider>
-            <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: "#FFFFFF" } }} />
+            <StatusBar style="light" />
+            <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: "#0B0B0F" } }} />
           </AuthProvider>
         </SafeAreaProvider>
       </KeyboardProvider>

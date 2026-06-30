@@ -7,6 +7,11 @@ import logging
 import uuid
 import bcrypt
 import httpx
+import base64
+import json
+import tempfile
+from emergentintegrations.llm.chat import LlmChat, UserMessage, ImageContent
+from emergentintegrations.llm.openai.speech_to_text import OpenAISpeechToText
 from pathlib import Path
 from pydantic import BaseModel, Field, EmailStr
 from typing import List, Optional
@@ -26,6 +31,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 EMERGENT_SESSION_API = "https://demobackend.emergentagent.com/auth/v1/env/oauth/session-data"
+EMERGENT_LLM_KEY = os.environ.get("EMERGENT_LLM_KEY", "")
 
 # ----------------------------- Helpers -----------------------------
 
@@ -115,6 +121,25 @@ class ReviewInput(BaseModel):
 
 class MessageInput(BaseModel):
     text: str
+
+class DiagnoseInput(BaseModel):
+    text: str = ""
+    images: List[str] = []
+    lat: Optional[float] = None
+    lng: Optional[float] = None
+
+class TranscribeInput(BaseModel):
+    audio_base64: str
+    ext: str = "m4a"
+
+class MissionInput(BaseModel):
+    trade: str
+    urgency: str = "moyenne"
+    diagnosis: dict = {}
+    lat: Optional[float] = None
+    lng: Optional[float] = None
+    price_min: float = 0
+    price_max: float = 0
 
 # ----------------------------- Categories -----------------------------
 
@@ -333,6 +358,11 @@ async def upsert_artisan_profile(data: ArtisanProfileInput, user=Depends(get_cur
             "reviews_count": 0,
             "base_rating": 0,
             "base_reviews_count": 0,
+            "trust_score": 80,
+            "acceptance_rate": 100,
+            "completion_rate": 100,
+            "response_min": 20,
+            "jobs_done": 0,
             "is_subscribed": False,
             "subscription_expires": None,
             "created_at": now_utc().isoformat(),
@@ -546,6 +576,245 @@ async def send_message(conversation_id: str, data: MessageInput, user=Depends(ge
     msg.pop("_id", None)
     return msg
 
+# ----------------------------- AI: Diagnosis & Voice -----------------------------
+
+@api_router.post("/ai/diagnose")
+async def ai_diagnose(data: DiagnoseInput, user=Depends(get_current_user)):
+    slugs = ", ".join(c["slug"] for c in CATEGORIES)
+    system = (
+        "Tu es l'IA de diagnostic de ProConnect, plateforme premium de services à domicile en France. "
+        "Tu analyses la description et/ou les photos d'un problème domestique et tu produis un diagnostic clair. "
+        "Réponds UNIQUEMENT avec un objet JSON valide (aucun texte autour), avec ces clés exactes: "
+        "problem (string, résumé du problème en français), "
+        f"trade (un slug parmi: {slugs}), "
+        "trade_label (nom lisible du métier), "
+        "urgency (un parmi: faible, moyenne, elevee, urgence), "
+        "duration_min (number, heures), duration_max (number, heures), "
+        "price_min (number, euros), price_max (number, euros), "
+        "materials (array de strings), "
+        "confidence (entier 0-100), "
+        "advice (string, conseil de sécurité court en français)."
+    )
+    if not EMERGENT_LLM_KEY:
+        raise HTTPException(status_code=500, detail="Clé IA non configurée")
+    chat = LlmChat(api_key=EMERGENT_LLM_KEY, session_id=f"diag-{uuid.uuid4().hex[:10]}", system_message=system).with_model("openai", "gpt-4o")
+    files = []
+    for img in (data.images or [])[:3]:
+        b64 = img.split(",", 1)[1] if img.startswith("data:") else img
+        files.append(ImageContent(image_base64=b64))
+    text = data.text.strip() or "Analyse les photos fournies et établis le diagnostic."
+    try:
+        raw = await chat.send_message(UserMessage(text=text, file_contents=files or None))
+    except Exception as e:
+        logger.error(f"diagnose error: {e}")
+        raise HTTPException(status_code=502, detail="Le diagnostic IA a échoué, réessayez.")
+    txt = raw.strip()
+    if txt.startswith("```"):
+        txt = txt.strip("`")
+        if txt.lower().startswith("json"):
+            txt = txt[4:]
+        txt = txt.strip()
+    try:
+        result = json.loads(txt)
+    except Exception:
+        result = {
+            "problem": text, "trade": "plombier", "trade_label": "Plombier",
+            "urgency": "moyenne", "duration_min": 1, "duration_max": 2,
+            "price_min": 80, "price_max": 200, "materials": [], "confidence": 50,
+            "advice": "Coupez l'alimentation concernée et attendez le professionnel.",
+        }
+    if result.get("trade") not in CATEGORY_MAP:
+        lbl = (result.get("trade_label") or "").lower()
+        match = next((c["slug"] for c in CATEGORIES if c["name"].lower() in lbl or c["slug"] in lbl), "plombier")
+        result["trade"] = match
+    cat = CATEGORY_MAP.get(result["trade"])
+    result["trade_label"] = cat["name"] if cat else result.get("trade_label")
+    result["trade_icon"] = cat["icon"] if cat else "construct"
+    return result
+
+@api_router.post("/ai/transcribe")
+async def ai_transcribe(data: TranscribeInput, user=Depends(get_current_user)):
+    if not EMERGENT_LLM_KEY:
+        raise HTTPException(status_code=500, detail="Clé IA non configurée")
+    payload = data.audio_base64.split(",", 1)[-1]
+    try:
+        raw = base64.b64decode(payload)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Audio invalide")
+    suffix = "." + (data.ext or "m4a").lstrip(".")
+    path = None
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as f:
+            f.write(raw)
+            path = f.name
+        stt = OpenAISpeechToText(api_key=EMERGENT_LLM_KEY)
+        res = await stt.transcribe(file=path, model="whisper-1", response_format="json", language="fr")
+        text = getattr(res, "text", None)
+        if text is None and isinstance(res, dict):
+            text = res.get("text", "")
+        if text is None:
+            text = str(res)
+        return {"text": text}
+    except Exception as e:
+        logger.error(f"transcribe error: {e}")
+        raise HTTPException(status_code=502, detail="La transcription a échoué.")
+    finally:
+        if path and os.path.exists(path):
+            os.remove(path)
+
+# ----------------------------- Matching & Missions -----------------------------
+
+URGENCY_LABELS = {"faible": "Faible", "moyenne": "Modérée", "elevee": "Élevée", "urgence": "Urgence"}
+
+def match_score(a: dict, lat, lng):
+    rating = a.get("rating", 4.5) or 4.5
+    trust = a.get("trust_score", 90) or 90
+    accept = a.get("acceptance_rate", 90) or 90
+    resp = a.get("response_min", 15) or 15
+    score = rating * 8 + trust * 0.4 + accept * 0.2 - resp * 0.1
+    if lat is not None and lng is not None and a.get("lat") is not None and a.get("lng") is not None:
+        d = haversine(lat, lng, a["lat"], a["lng"])
+        a["distance_km"] = round(d, 1)
+        score -= d * 0.25
+    if not a.get("available", True):
+        score -= 1000
+    return score
+
+def mission_artisan_card(a: dict):
+    return {
+        "artisan_id": a["artisan_id"],
+        "name": a.get("name") or a.get("title"),
+        "title": a.get("title"),
+        "photo": a.get("photo"),
+        "trade_name": a.get("trade_name"),
+        "rating": a.get("rating", 5.0),
+        "reviews_count": a.get("reviews_count", 0),
+        "trust_score": a.get("trust_score", 90),
+        "acceptance_rate": a.get("acceptance_rate", 90),
+        "response_min": a.get("response_min", 15),
+        "distance_km": a.get("distance_km"),
+        "city": a.get("city"),
+        "phone": a.get("phone"),
+        "lat": a.get("lat"),
+        "lng": a.get("lng"),
+    }
+
+@api_router.post("/missions")
+async def create_mission(data: MissionInput, user=Depends(get_current_user)):
+    artisans = await db.artisan_profiles.find({"is_subscribed": True, "trade": data.trade}, {"_id": 0}).to_list(500)
+    artisans = [await enrich_artisan(a) for a in artisans]
+    ranked = sorted(artisans, key=lambda a: match_score(a, data.lat, data.lng), reverse=True)
+    if not ranked:
+        raise HTTPException(status_code=404, detail="Aucun professionnel disponible pour ce métier.")
+    client_lat = data.lat if data.lat is not None else 48.8566
+    client_lng = data.lng if data.lng is not None else 2.3522
+    candidates = [a["artisan_id"] for a in ranked]
+    top = ranked[0]
+    mission = {
+        "mission_id": new_id("msn"),
+        "client_id": user["user_id"],
+        "client_name": user["name"],
+        "trade": data.trade,
+        "trade_name": top.get("trade_name"),
+        "urgency": data.urgency,
+        "urgency_label": URGENCY_LABELS.get(data.urgency, "Modérée"),
+        "diagnosis": data.diagnosis,
+        "price_min": data.price_min,
+        "price_max": data.price_max,
+        "client_lat": client_lat,
+        "client_lng": client_lng,
+        "candidates": candidates,
+        "candidate_index": 0,
+        "artisan": mission_artisan_card(top),
+        "status": "proposed",
+        "eta_minutes": None,
+        "accepted_at": None,
+        "created_at": now_utc().isoformat(),
+    }
+    await db.missions.insert_one(mission)
+    mission.pop("_id", None)
+    return mission
+
+async def _set_candidate(mission: dict, idx: int):
+    aid = mission["candidates"][idx]
+    a = await db.artisan_profiles.find_one({"artisan_id": aid}, {"_id": 0})
+    a = await enrich_artisan(a)
+    a["distance_km"] = round(haversine(mission["client_lat"], mission["client_lng"], a["lat"], a["lng"]), 1) if a.get("lat") else None
+    card = mission_artisan_card(a)
+    await db.missions.update_one({"mission_id": mission["mission_id"]}, {"$set": {"candidate_index": idx, "artisan": card, "status": "proposed"}})
+    return card
+
+@api_router.post("/missions/{mission_id}/refuse")
+async def refuse_mission(mission_id: str, user=Depends(get_current_user)):
+    m = await db.missions.find_one({"mission_id": mission_id}, {"_id": 0})
+    if not m or m["client_id"] != user["user_id"]:
+        raise HTTPException(status_code=404, detail="Mission introuvable")
+    nxt = m["candidate_index"] + 1
+    if nxt >= len(m["candidates"]):
+        await db.missions.update_one({"mission_id": mission_id}, {"$set": {"status": "no_pro"}})
+        return {"status": "no_pro"}
+    card = await _set_candidate(m, nxt)
+    return {"status": "proposed", "artisan": card}
+
+@api_router.post("/missions/{mission_id}/confirm")
+async def confirm_mission(mission_id: str, user=Depends(get_current_user)):
+    m = await db.missions.find_one({"mission_id": mission_id}, {"_id": 0})
+    if not m or m["client_id"] != user["user_id"]:
+        raise HTTPException(status_code=404, detail="Mission introuvable")
+    a = m["artisan"]
+    a_lat = a.get("lat") if a.get("lat") is not None else m["client_lat"] + 0.05
+    a_lng = a.get("lng") if a.get("lng") is not None else m["client_lng"] + 0.05
+    dist = haversine(a_lat, a_lng, m["client_lat"], m["client_lng"])
+    eta = max(3, min(40, round(dist / 35 * 60)))
+    if dist < 0.1:
+        eta = 6
+    upd = {
+        "status": "en_route",
+        "accepted_at": now_utc().isoformat(),
+        "eta_minutes": eta,
+        "artisan_start_lat": a_lat,
+        "artisan_start_lng": a_lng,
+    }
+    await db.missions.update_one({"mission_id": mission_id}, {"$set": upd})
+    m.update(upd)
+    return m
+
+@api_router.get("/missions/mine")
+async def my_missions(user=Depends(get_current_user)):
+    ms = await db.missions.find({"client_id": user["user_id"]}, {"_id": 0}).to_list(500)
+    ms.sort(key=lambda x: x.get("created_at", ""), reverse=True)
+    return ms
+
+@api_router.get("/missions/{mission_id}")
+async def get_mission(mission_id: str, user=Depends(get_current_user)):
+    m = await db.missions.find_one({"mission_id": mission_id}, {"_id": 0})
+    if not m or m["client_id"] != user["user_id"]:
+        raise HTTPException(status_code=404, detail="Mission introuvable")
+    if m.get("status") in ("en_route", "arrived") and m.get("accepted_at"):
+        accepted = datetime.fromisoformat(m["accepted_at"])
+        if accepted.tzinfo is None:
+            accepted = accepted.replace(tzinfo=timezone.utc)
+        elapsed_min = (now_utc() - accepted).total_seconds() / 60.0
+        eta = m.get("eta_minutes") or 8
+        prog = min(1.0, elapsed_min / eta) if eta > 0 else 1.0
+        slat = m.get("artisan_start_lat", m["client_lat"])
+        slng = m.get("artisan_start_lng", m["client_lng"])
+        m["current_lat"] = slat + (m["client_lat"] - slat) * prog
+        m["current_lng"] = slng + (m["client_lng"] - slng) * prog
+        m["eta_remaining"] = max(0, round(eta * (1 - prog)))
+        if prog >= 1 and m["status"] == "en_route":
+            m["status"] = "arrived"
+            await db.missions.update_one({"mission_id": mission_id}, {"$set": {"status": "arrived"}})
+    return m
+
+@api_router.post("/missions/{mission_id}/complete")
+async def complete_mission(mission_id: str, user=Depends(get_current_user)):
+    m = await db.missions.find_one({"mission_id": mission_id}, {"_id": 0})
+    if not m or m["client_id"] != user["user_id"]:
+        raise HTTPException(status_code=404, detail="Mission introuvable")
+    await db.missions.update_one({"mission_id": mission_id}, {"$set": {"status": "completed"}})
+    return {"status": "completed"}
+
 # ----------------------------- Seed -----------------------------
 
 SEED_ARTISANS = [
@@ -588,6 +857,11 @@ async def seed_data():
                 "lng": coords[1] if coords else None,
                 "base_rating": s["rating"],
                 "base_reviews_count": s["reviews_count"],
+                "trust_score": min(99, round(s["rating"] * 19 + 4)),
+                "acceptance_rate": 92,
+                "completion_rate": 97,
+                "response_min": 12,
+                "jobs_done": s["reviews_count"],
                 "subscription_expires": (now_utc() + timedelta(days=365)).isoformat(),
                 "trade_name": cat["name"] if cat else s["trade"],
                 "phone": "+33 6 12 34 56 78",
