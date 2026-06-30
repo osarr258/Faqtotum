@@ -21,7 +21,15 @@ Application de mise en relation à la Uber/Airbnb connectant les clients (partic
 - Tabs client: Accueil, Réservations, Profil. Tabs artisan: Tableau de bord, Mon profil, Abonnement.
 
 ## Implemented (2026-06-30)
-### Phase 3 — AI-first premium pivot (latest)
+### Phase 4 — Couche d'intelligence backend (architecte IA)
+- Moteur de matching pondéré modulaire `services/matching.py` branché sur POST /missions: score 0-100 (note, Trust, distance, acceptation, réactivité, complétion, expérience, prix, dispo, premium) + pénalité d'annulation; boost en mode urgence. Renvoie `match_score`, `match_label` (FR) et `match_reasons` (FR, "Pourquoi l'IA le recommande") — affichés sur l'écran matching.
+- Mode Urgence: broadcast aux top 5 pros (`notified_pros`, status `searching`), POST /missions/{id}/pro_accept = premier qui accepte gagne (409 sinon, 403 non sollicité, 400 hors urgence).
+- Architecture sync calendrier MOCKÉE `services/calendar_sync.py`: GET /artisans/{id}/availability (créneaux 2h, busy depuis bookings), POST /artisans/me/calendar/connect (google/outlook/apple mock).
+- Modèles future-ready: complete_mission génère facture + garantie 12 mois + entrée Home Passport. GET /home-passport, POST /home-passport/equipment, GET /invoices/mine, GET /guarantees/mine.
+- Stats artisan étendues: cancellation_rate, acceptance/response variés (seed + migration idempotente).
+
+## Implemented (antérieur)
+### Phase 3 — AI-first premium pivot
 - Refonte design complète: thème premium DARK + accents OR CHAMPAGNE (Revolut/Apple), Plus Jakarta Sans.
 - Bouton "J'ai un problème" + écran Diagnostic IA: texte + photos (expo-image-picker) + voix (expo-audio → Whisper /ai/transcribe). GPT-4o vision (/ai/diagnose) → problème, métier, urgence, durée, fourchette de prix, matériel, score de confiance, conseil sécurité.
 - Matching IA automatique (/missions): scoring (note, Trust Score, acceptation, réponse, distance) → propose LE meilleur pro; refuser → pro suivant.
