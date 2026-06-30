@@ -1,0 +1,115 @@
+"""
+ProConnect — AI Matching Engine
+================================
+Pure, stateless scoring service. Given a list of (already enriched) artisan
+dicts and a request CONTEXT, it ranks professionals by a weighted multi-criteria
+score (0-100) and produces a human-readable explanation for the recommendation.
+
+The raw score is NEVER exposed to the customer; the UI only shows
+"Recommandé par l'IA" + the explanation reasons.
+
+Design goals: deterministic, side-effect free, easily unit-tested, and scalable
+(O(n) over the candidate pool). All weights live in WEIGHTS and are documented.
+"""
+from __future__ import annotations
+import math
+from typing import List, Dict, Any, Tuple
+
+# Weighted criteria — must sum to 100 (documented & tunable).
+WEIGHTS: Dict[str, float] = {
+    "rating": 22,        # average customer rating (0-5)
+    "trust": 16,         # internal Trust Score (0-100)
+    "distance": 14,      # proximity to the customer
+    "acceptance": 10,    # acceptance rate (%)
+    "response": 9,       # responsiveness (lower minutes = better)
+    "completion": 8,     # completion rate (%)
+    "jobs": 7,           # experience (completed jobs)
+    "price": 6,          # price competitiveness within the pool
+    "availability": 5,   # currently available
+    "premium": 3,        # premium / loyalty partner
+}
+
+
+def _haversine(lat1, lon1, lat2, lon2) -> float:
+    R = 6371.0
+    dlat = math.radians(lat2 - lat1)
+    dlon = math.radians(lon2 - lon1)
+    a = math.sin(dlat / 2) ** 2 + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(dlon / 2) ** 2
+    return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+
+
+def _clamp(v: float, lo: float = 0.0, hi: float = 1.0) -> float:
+    return max(lo, min(hi, v))
+
+
+def distance_km(a: Dict[str, Any], ctx: Dict[str, Any]):
+    if ctx.get("lat") is None or a.get("lat") is None:
+        return None
+    return round(_haversine(ctx["lat"], ctx["lng"], a["lat"], a["lng"]), 1)
+
+
+def score(a: Dict[str, Any], ctx: Dict[str, Any]) -> Tuple[float, Dict[str, float], float]:
+    """Return (score_0_100, breakdown, distance_km)."""
+    d = distance_km(a, ctx)
+    rate_min = ctx.get("rate_min", 30.0)
+    rate_max = ctx.get("rate_max", 70.0)
+    rate_span = max(1.0, rate_max - rate_min)
+    emergency = ctx.get("urgency") == "urgence"
+
+    sub = {
+        "rating": _clamp((a.get("rating", 4.5) or 4.5) / 5.0),
+        "trust": _clamp((a.get("trust_score", 85) or 85) / 100.0),
+        "distance": 0.6 if d is None else _clamp(1 - min(d, 50) / 50.0),
+        "acceptance": _clamp((a.get("acceptance_rate", 90) or 90) / 100.0),
+        "response": _clamp(1 - min(a.get("response_min", 20) or 20, 60) / 60.0),
+        "completion": _clamp((a.get("completion_rate", 95) or 95) / 100.0),
+        "jobs": _clamp(min(a.get("jobs_done", 0) or 0, 500) / 500.0),
+        "price": _clamp(1 - ((a.get("hourly_rate", rate_min) or rate_min) - rate_min) / rate_span),
+        "availability": 1.0 if a.get("available", True) else 0.0,
+        "premium": 1.0 if (a.get("trust_score", 0) or 0) >= 95 else 0.0,
+    }
+
+    # Emergency boosts responsiveness & availability importance.
+    weights = dict(WEIGHTS)
+    if emergency:
+        weights["response"] += 6
+        weights["availability"] += 6
+        weights["distance"] += 4
+
+    total_w = sum(weights.values())
+    raw = sum(sub[k] * weights[k] for k in sub) / total_w * 100.0
+    # Cancellation penalty (if tracked).
+    raw -= (a.get("cancellation_rate", 0) or 0) * 0.3
+    return round(_clamp(raw, 0, 100), 1), sub, d
+
+
+def rank(artisans: List[Dict[str, Any]], ctx: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Return a NEW list of cards sorted best-first, each annotated with
+    match_score, score_breakdown and distance_km. Inputs are not mutated."""
+    out = []
+    for a in artisans:
+        s, breakdown, d = score(a, ctx)
+        card = dict(a)
+        card["match_score"] = s
+        card["score_breakdown"] = breakdown
+        card["distance_km"] = d
+        out.append(card)
+    out.sort(key=lambda c: c["match_score"], reverse=True)
+    return out
+
+
+def explain(card: Dict[str, Any], eta_minutes: int | None = None) -> List[str]:
+    """Human-readable reasons WHY this pro was recommended (top signals)."""
+    reasons: List[str] = []
+    if eta_minutes is not None:
+        reasons.append(f"Disponible dans ~{eta_minutes} min")
+    if card.get("rating"):
+        reasons.append(f"Note {card['rating']:.1f}★ ({card.get('reviews_count', 0)} avis)")
+    if (card.get("jobs_done") or 0) >= 20:
+        reasons.append(f"{card['jobs_done']} missions réalisées")
+    if (card.get("acceptance_rate") or 0) >= 85:
+        reasons.append(f"{card['acceptance_rate']}% de taux d'acceptation")
+    if (card.get("score_breakdown", {}).get("price", 0)) >= 0.6:
+        reasons.append("Excellent rapport qualité-prix")
+    reasons.append("Assurance & identité vérifiées")
+    return reasons[:6]
