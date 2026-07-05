@@ -1,0 +1,36 @@
+{
+  "summary": "Frontend-only regression sweep of the iteration-4 VISUAL redesign (onboarding + auth + Button). All redesign acceptance criteria PASS. (1) /onboarding renders without runtime/red-box error: brand row 'ProConnect + IA' ✓, large title 'Comment pouvons-nous vous aider aujourd'hui ?' ✓, subtitle ✓, all 3 CTAs (role-client-card / role-project-card / role-artisan-card) ✓, and all 4 value cards (Diagnostic IA, Prix estimé, Pros vérifiés, Réservation express) ✓. FadeIn/FadeInDown entrance animations render fine on web and do NOT block interaction. (2) Routing: tapping role-client-card → /auth?role=client&intent=problem (Espace Client tag, register mode, name/email/password inputs). Tapping role-project-card → /auth?role=client&intent=project (Espace Client). Tapping role-artisan-card → /auth?role=artisan (Espace Pro tag rendered). (3) Auth: premium TextInput focus (gold border via Field.fieldFocused) works on tap email-input; reassurance line 'Inscription gratuite • Sécurisé • Moins de 2 minutes' is visible in register mode and is HIDDEN after toggle-mode to login (replaced by 'Bon retour' header). (4) FULL AUTH REGRESSION still works: registered a NEW client redesign_client_hppmqdk8@proconnect.fr / test1234 → lands on client home with gold 'J'ai un problème' problem-button (data-testid present). Then existing client client.test@proconnect.fr / test1234 logs in → client home, problem-button present, tapping it navigates to /diagnose (so Button ripple/press-scale does NOT block onPress). Artisan login pro.test@proconnect.fr / test1234 from onboarding → Espace Pro 'Marc' dashboard renders (4 Demandes en attente, 3 Missions acceptées, En attente/Acceptées/Terminées filters, bottom tabs Tableau de bord / Messages / Mon profil / Abonnement). (5) Button press still triggers actions: submit-button (auth) triggered both register and login successfully, problem-button (client home) triggered navigation to /diagnose. ZERO pageerror, ZERO red-screen. Only console warnings observed (non-blocking, carry-over + 1 new): 'shadow*' style props deprecated (iter3 carry-over) AND 'props.pointerEvents is deprecated. Use style.pointerEvents' — coming from new <LinearGradient ... pointerEvents=\"none\"> in onboarding.tsx:30.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": [
+      {"component": "onboarding.tsx (LinearGradient)", "issue": "RN Web deprecation: 'props.pointerEvents is deprecated. Use style.pointerEvents'. Reference: /app/frontend/app/onboarding.tsx:30 — pass pointerEvents via style instead of prop."},
+      {"component": "ui.tsx / multiple", "issue": "RN Web deprecation warning persists: '\"shadow*\" style props are deprecated. Use \"boxShadow\".' Non-blocking, carry-over from iter2/iter3."}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_proconnect_api.py",
+    "/app/backend/tests/test_phase2_features.py",
+    "/app/test_reports/pytest/pytest_results.xml",
+    "/app/test_reports/pytest/phase2_results.xml"
+  ],
+  "action_items": [
+    "(Minor / cosmetic) In /app/frontend/app/onboarding.tsx:30 change `<LinearGradient ... pointerEvents=\"none\">` to use `style={{ ..., pointerEvents: 'none' }}` (or wrap inside a View with style.pointerEvents) to silence the RN Web warning.",
+    "(Optional carry-over) Migrate remaining shadow* style props to boxShadow to silence RN Web console warnings (cosmetic, no behavior change)."
+  ],
+  "critical_code_review_comments": [
+    "Redesign is clean: onboarding.tsx exposes the 3 required testIDs (role-client-card, role-project-card, role-artisan-card) and 4 value cards with FadeInDown delays — entrances stagger 80→820ms and never block touch.",
+    "auth.tsx Field component correctly toggles focused state (border → colors.brand) on TextInput onFocus/onBlur. Reassurance block is gated by `mode === 'register'` — verified hidden after toggle-mode.",
+    "ui.tsx Button uses Pressable + android_ripple + transform scale(0.98) on pressed; onPress is preserved (Haptics.impactAsync is wrapped in .catch and onPress is fired right after). Verified by successful submit-button (register/login) and problem-button (navigates to /diagnose).",
+    "go(role, intent) in onboarding correctly forwards intent only when defined, producing clean URLs (/auth?role=client without intent for the artisan path)."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "skipped (frontend-only per main agent request)", "frontend": "100% (all 6 features_or_bugs_to_test verified)"},
+  "seed_data_creation": "Registered one new client account: redesign_client_hppmqdk8@proconnect.fr / test1234 (role=client, name='Redesign Tester'). Can be left in DB or main agent may purge.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Onboarding now has THREE CTAs (role-client-card / role-project-card → both /auth?role=client, role-artisan-card → /auth?role=artisan). When testing role-artisan-card, scroll to bottom of the ScrollView first (window.scrollTo(0, document.body.scrollHeight)) otherwise is_visible can return False due to it being below the fold on 375x667. Auth default mode after fresh load = 'register' (name-input rendered); use [data-testid='toggle-mode'] to switch to login. Reassurance line text: 'Inscription gratuite • Sécurisé • Moins de 2 minutes' (visible ONLY in register mode). Existing test credentials in /app/memory/test_credentials.md are valid.",
+  "rca_of_issue": "N/A — pure visual/UX redesign regression sweep with no functional bugs. One new RN-Web warning introduced by the redesign (pointerEvents prop on LinearGradient) — cosmetic only."
+}

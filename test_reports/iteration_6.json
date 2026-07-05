@@ -1,0 +1,34 @@
+{
+  "summary": "Chief AI Architect sprint — backend-only acceptance sweep PASSED 34/34 (plus 23/23 regression of phase3 + sprint_new = 57/57). New endpoints verified end-to-end against public EXPO_PUBLIC_BACKEND_URL: (1) POST /api/missions standard returns mode='standard', status='proposed', top_matches[] each with numeric match_score in [0,100], FR match_label ∈ {Correspondance excellente / Très bonne / Bonne / correcte}, non-empty FR match_reasons[] (incl. 'Disponible dans ~Xmin', 'Note X.X★ (N avis)', 'Très proche (X km)', 'Trust Score élevé', 'Assurance & identité vérifiées'), sorted best-first, top_matches[0]==artisan==candidates[0]. (2) urgence -> mode='emergency', status='searching', notified_pros[] unique, ≤5, subset of candidates. (3) /refuse advances to next candidate (status 'proposed', match_reasons present on new artisan card) and eventually returns 'no_pro' when pool exhausted; /confirm flips to 'en_route' with integer eta 1..60. (4) /pro_accept emergency: first valid notified pro -> 200 en_route; second pro_accept -> 409 (race-safe via conditional update accepted_by=None); non-notified artisan (different trade) -> 403; non-emergency mission -> 400; unknown mission -> 404. (5) GET /artisans/{id}/availability?days=7 returns days=7, each with slots[{hour,label,available:bool}], next_available shape, calendar_connected:bool, provider; unknown artisan -> 404. (6) POST /artisans/me/calendar/connect {provider:'google'} (artisan auth) -> connected=true, mock=true, persisted (subsequent GET availability reports calendar_connected=true, provider='google'); invalid provider 'myspace' -> 400; client account (no artisan profile) -> 404. (7) /missions/{id}/complete -> {status:'completed', invoice_id:'inv_*', guarantee_id:'grt_*'}; /invoices/mine lists the invoice (currency EUR, status issued, mission_id match); /guarantees/mine lists guarantee with status='active', label contains '12 mois', expires_at − starts_at ≈ 365 days; /home-passport.maintenance_history has a new entry with matching invoice_id+guarantee_id. (8) /home-passport (default shape with equipment/maintenance_history/guarantees arrays), /home-passport/equipment persists item with eqp_ id, unauth -> 401/403. (9) Regression: /auth/login, /categories (≥10, includes plombier/electricien/peintre), /artisans list (no _id leak), /artisans?category=electricien filter, /bookings/mine, POST /bookings (pending), /conversations, /ai/diagnose auth gating — all green. Mocked: calendar provider connect + availability busy pattern is deterministic (services/calendar_sync.py) — clearly flagged in payload via mock:true.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_chief_ai_sprint.py",
+    "/app/test_reports/pytest/chief_ai_sprint.xml",
+    "/app/backend/tests/test_phase3_ai_missions.py",
+    "/app/backend/tests/test_sprint_new_features.py"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py:781 /missions/{id}/book is the legacy single-artisan booking path — it returns 404 for both 'mission not owned' and 'unknown mission'. Consider 403 for ownership to disambiguate from 'not found' (purely semantic; existing tests rely on 404).",
+    "server.py:934 /missions/{id}/pro_accept is intentionally open (no get_current_user) per task description. Race condition is correctly guarded by the conditional update {accepted_by: None} -> 409 on modified_count==0 — verified live with two sequential requests on a fresh emergency mission.",
+    "server.py:738 /missions filters artisans by trade AND is_subscribed=true: silently returns 404 'Aucun professionnel disponible' if either condition has zero matches. Adequate French message.",
+    "services/matching.py: weights sum to 100, emergency rule boosts response/availability/distance; matching.explain produces ≤5 deduped FR reasons; matching.confidence_label correctly maps to 4 FR labels. Pure & side-effect-free as documented.",
+    "services/calendar_sync.py connect_provider raises ValueError for unsupported provider — server.py:1002 catches and returns 400 'Fournisseur non supporté: …'. SUPPORTED_PROVIDERS = google/outlook/apple. Mock connection persists on artisan_profiles.calendar_connected + .calendar_provider + .calendar_connection.",
+    "server.py:1142 — file is at 1141 lines, getting large (>700 line guideline). Consider splitting auth/missions/passport into separate routers for maintainability (non-blocking)."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_chief_ai_sprint.py (NEW — 34 sprint-specific pytest tests across 9 classes)"
+  ],
+  "success_rate": {"backend": "100% (34/34 new + 23/23 regression = 57/57)", "frontend": "N/A — frontend testing skipped per request"},
+  "seed_data_creation": "Reused client.test@proconnect.fr / pro.test@proconnect.fr. Registered one ephemeral 'TEST_other_<rand>@proconnect.fr' (module-scoped) for ownership checks. Equipment items prefixed 'TEST ' for easy cleanup. No production data mutated.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Chief AI Architect sprint endpoints all stable. Key fixtures in test_chief_ai_sprint.py: client_h/pro_h/other_client_h are module-scoped; TestProAccept.fresh_emergency is function-scoped so race tests get fresh missions. test_non_notified_pro_returns_403 picks an artisan from a different trade (any non-plombier) to guarantee it's not in notified_pros — necessary because the plombier pool is small (~2 seeded) so all plombiers always end up in notified_pros. /api/ai/diagnose calls REAL GPT-4o (Emergent key) — the sprint suite avoids invoking it (only checks 401 gating); phase3 + sprint_new each consume exactly one diagnose LLM call. /artisans/me/calendar/connect persists to artisan_profiles — after the test the pro.test artisan WILL have calendar_connected=true; subsequent availability calls reflect this state. Mission ids are msn_*, invoice inv_*, guarantee grt_*, equipment eqp_*.",
+  "rca_of_issue": "N/A — acceptance sweep, zero defects."
+}

@@ -1,0 +1,204 @@
+{
+  "app_name": "ProConnect",
+  "personality": "1 iOS-Native Clean",
+  "personality_one_liner": "A fintech-grade, ultra-fluid marketplace where booking a manual trade professional feels as effortless, transparent, and trustworthy as sending a payment on Revolut.",
+  "color": {
+    "light": {
+      "surface": "#FFFFFF",
+      "onSurface": "#18181B",
+      "surfaceSecondary": "#F4F4F5",
+      "onSurfaceSecondary": "#27272A",
+      "surfaceTertiary": "#E4E4E7",
+      "onSurfaceTertiary": "#3F3F46",
+      "surfaceInverse": "#18181B",
+      "onSurfaceInverse": "#FFFFFF",
+      "brand": "#18181B",
+      "brandPrimary": "#18181B",
+      "onBrandPrimary": "#FFFFFF",
+      "brandSecondary": "#3F3F46",
+      "onBrandSecondary": "#FFFFFF",
+      "brandTertiary": "#E4E4E7",
+      "onBrandTertiary": "#18181B",
+      "success": "#059669",
+      "onSuccess": "#FFFFFF",
+      "warning": "#D97706",
+      "onWarning": "#FFFFFF",
+      "error": "#DC2626",
+      "onError": "#FFFFFF",
+      "info": "#4B5563",
+      "onInfo": "#FFFFFF",
+      "border": "#E4E4E7",
+      "borderStrong": "#A1A1AA",
+      "divider": "#F4F4F5"
+    },
+    "dark": {
+      "surface": "#09090B",
+      "onSurface": "#FAFAFA",
+      "surfaceSecondary": "#18181B",
+      "onSurfaceSecondary": "#E4E4E7",
+      "surfaceTertiary": "#27272A",
+      "onSurfaceTertiary": "#D4D4D8",
+      "surfaceInverse": "#FAFAFA",
+      "onSurfaceInverse": "#18181B",
+      "brand": "#FAFAFA",
+      "brandPrimary": "#FAFAFA",
+      "onBrandPrimary": "#18181B",
+      "brandSecondary": "#A1A1AA",
+      "onBrandSecondary": "#18181B",
+      "brandTertiary": "#27272A",
+      "onBrandTertiary": "#FAFAFA",
+      "success": "#10B981",
+      "onSuccess": "#064E3B",
+      "warning": "#F59E0B",
+      "onWarning": "#78350F",
+      "error": "#EF4444",
+      "onError": "#7F1D1D",
+      "info": "#9CA3AF",
+      "onInfo": "#111827",
+      "border": "#27272A",
+      "borderStrong": "#52525B",
+      "divider": "#18181B"
+    }
+  },
+  "typography": {
+    "displayFontFamily": "Plus Jakarta Sans",
+    "textFontFamily": "Plus Jakarta Sans",
+    "scale": {
+      "sm": 12,
+      "base": 14,
+      "lg": 16,
+      "xl": 20,
+      "2xl": 24
+    }
+  },
+  "spacing": {
+    "rule": "Generous Apple-native rhythms. Content is the hero. Ensure list items have a min 56pt height. Leave clear breathing room around headers.",
+    "xs": 4,
+    "sm": 8,
+    "md": 12,
+    "lg": 16,
+    "xl": 24,
+    "2xl": 32,
+    "3xl": 48
+  },
+  "radius_tokens": {
+    "sm": 6,
+    "md": 12,
+    "lg": 20,
+    "pill": 999
+  },
+  "shadow_tier": "1",
+  "navigation": "bottom_tabs",
+  "icon_set": "Phosphor",
+  "glassmorphism": {
+    "enabled": true,
+    "do's": [
+      "Use on the bottom tab bar.",
+      "Use for a sticky 'Book Now' primary CTA floating at the bottom of the artisan detail screen.",
+      "Use for sticky top headers when scrolling through the artisan list or bookings.",
+      "Apply to pinned category filter chips."
+    ],
+    "dont's": [
+      "Never apply to standard list rows or form inputs.",
+      "Do not blur standard cards in the main home feed."
+    ]
+  },
+  "platform_libraries": {
+    "glass": {
+      "ios": "expo-glass-effect",
+      "android": "expo-blur",
+      "low_end_android_fallback": "solid surfaceSecondary"
+    },
+    "image": "expo-image",
+    "blur": "expo-blur",
+    "bottom_sheet": "@gorhom/bottom-sheet",
+    "animation": "react-native-reanimated",
+    "gesture": "react-native-gesture-handler"
+  },
+  "screens": [
+    {
+      "name": "Onboarding & Role Selection",
+      "purpose": "A minimalist, high-contrast entry point that elegantly asks the user if they are hiring (Client) or working (Artisan).",
+      "states": {
+        "loading": "Centered spinner, near-black tint.",
+        "empty": "N/A",
+        "error": "Standard alert toast at the top, red tint."
+      },
+      "layout": "Large hero image at the top with a vertical gradient scrim (transparent to surface). Below it, massive display typography. Two large, equal-width cards (or a stacked column) offering 'I need a professional' vs 'I am a professional'. Use brandTertiary tinted backgrounds for the cards."
+    },
+    {
+      "name": "Client Home",
+      "purpose": "The main hub mimicking Revolut's clean dashboard, letting users instantly pick a trade category.",
+      "states": {
+        "loading": "Skeleton UI for the grid and horizontal lists.",
+        "empty": "N/A",
+        "error": "Error message with a 'Tap to retry' brandSecondary button."
+      },
+      "layout": "Top section: personalized greeting with user avatar. Middle: A 3-column grid of square cards for trade categories (Plumber, Painter, Electrician) using brandTertiary backgrounds and a Phosphor icon. Bottom: Horizontal scrolling 'Top Rated Artisans' using image cards with gradient scrims."
+    },
+    {
+      "name": "Artisan Search & List",
+      "purpose": "A fluid list of available professionals with transparent pricing and ratings, optimized for quick scanning.",
+      "states": {
+        "loading": "Skeleton rows mimicking artisan cards.",
+        "empty": "Illustration of an empty toolbox + 'No artisans found for this time.'",
+        "error": "Readable message + Retry button."
+      },
+      "layout": "Sticky glass header containing horizontal scrollable filter pills (Dates, Price, Rating). Below, a vertical scroll of artisan cards. Each card spans full width (minus padding). Cards show avatar (or initials), name, star rating, hourly rate, and a primary action icon."
+    },
+    {
+      "name": "Artisan Profile & Booking",
+      "purpose": "A premium detail view that builds trust and funnels the user into a frictionless slot picker.",
+      "states": {
+        "loading": "Spinner centered in the page.",
+        "empty": "N/A",
+        "error": "Toast with retry option."
+      },
+      "layout": "Hero image banner spanning full bleed with a top-to-bottom gradient scrim. The artisan's avatar overlaps the banner edge. Content below: verified badge, bio, reviews. Followed by a clean, horizontal calendar slot picker. Crucially, a sticky 'Continue / Book' button fixed at the bottom with a glass effect behind it."
+    },
+    {
+      "name": "Artisan Dashboard (Pro Side)",
+      "purpose": "A metrics-driven command center for professionals to view incoming bookings and earnings.",
+      "states": {
+        "loading": "Skeleton UI for metric cards.",
+        "empty": "Illustration of an empty calendar + 'You have no pending bookings today.'",
+        "error": "Readable message + Retry button."
+      },
+      "layout": "Large, bold numeric typography at the top showing today's earnings or pending requests. Below, a segmented control (Pending, Accepted, Completed). The list beneath shows incoming jobs with high-contrast 'Accept' / 'Decline' actions."
+    }
+  ],
+  "haptics": {
+    "events": {
+      "primary_button_press": "impactMedium",
+      "tab_change": "selection",
+      "slot_selection": "selection",
+      "role_card_press": "impactLight",
+      "success_booking": "notificationSuccess"
+    }
+  },
+  "images": {
+    "onboarding_hero": {
+      "url": "https://images.pexels.com/photos/2747599/pexels-photo-2747599.jpeg",
+      "dark": "https://images.pexels.com/photos/31572289/pexels-photo-31572289.png",
+      "alt": "Abstract modern architecture representing solid foundations and home"
+    },
+    "artisan_placeholder_1": {
+      "url": "https://images.pexels.com/photos/33388390/pexels-photo-33388390.jpeg",
+      "alt": "Professional technician repairing equipment"
+    },
+    "artisan_placeholder_2": {
+      "url": "https://images.pexels.com/photos/7859953/pexels-photo-7859953.jpeg",
+      "alt": "Close-up of hands doing precise maintenance work"
+    }
+  },
+  "instructions_to_main_agent": [
+    "Strictly adhere to the '1 iOS-Native Clean' personality. The UI must feel like a premium fintech app (Revolut), not a cluttered marketplace.",
+    "BANNED: Do not use any blues, purples, or indigo across the app. We are relying entirely on a high-contrast graphite black-and-white theme with occasional moss/emerald success states.",
+    "Use Phosphor icons consistently. Ensure they are the same weight throughout a single screen (e.g., all 'regular' or all 'fill').",
+    "Whenever displaying text over imagery (like the hero cover on the Artisan profile), you MUST use a vertical gradient scrim (transparent at 0%, to >70% surfaceInverse at 100%) as per the Imagery & Texture rules.",
+    "Implement glassmorphism (`expo-glass-effect` or `expo-blur`) for the sticky 'Book' CTA on the artisan detail screen and the bottom tab bar.",
+    "Always use the Plus Jakarta Sans font for both display and text to maintain the geometric, modern fintech feel.",
+    "Use full-width, single-column cards (with lg padding on the container) for list items. Do not use 48% flex blocks for lists.",
+    "For haptics, wire them directly to the buttons based on the `haptics.events` block defined in this document."
+  ]
+}
