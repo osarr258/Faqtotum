@@ -23,6 +23,26 @@ Application de mise en relation à la Uber/Airbnb connectant les clients (partic
 - Tabs client (5): Accueil, **Ma Maison**, Réservations, Messages, Profil.
 - Tabs artisan: Tableau de bord, Mon profil, Abonnement.
 
+## Implemented (2026-07 — Sprint Professional Hub)
+### Le HQ digital de chaque pro (17 endpoints, 41 tests)
+- **`services/pro_hub.py`** : Academy content (7 catégories + 7 cards `coming_soon`), Marketing modules stubs (5 tools), AI Business Coach déterministe (`coach_recommendations()`) qui combine breakdown du Trust Engine + milestones (25/100/500/1000 jobs + trust 90+), et `profile_completion()` pondéré (13 checks, 100 points).
+- **Pro Dashboard** : `GET /pro/dashboard` agrège 16 métriques (today's jobs, upcoming, revenue total + monthly, growth_pct 30j vs 30j-60j, trust_score + level, pro_level Bronze/Silver/Gold/Platinum/Elite avec progress %, satisfaction, response_rate, avg_response_min, profile_completion breakdown, pending_documents, unread_messages, badges, top 3 coach recos).
+- **Profil enrichi** : `PATCH /pro/profile` — logo/cover/services/areas_covered/opening_hours/certifications/languages/website/social. Recompute Trust auto. Retourne le profil + `profile_completion` (checks_count, checks_ok, missing[]).
+- **AI Business Coach** : `GET /pro/coach` — jusqu'à 6 recos personnalisées classées par impact desc, avec milestones badges + trust.
+- **Business Insights** : `GET /pro/insights` — revenue_evolution (12 mois), customer_growth (90j), unique_clients, repeat_clients (>1 booking), avg_job_value_cents, acceptance/cancellation/completion rates, top_cities top 5.
+- **Community Feed** : 4 kinds (project/tip/question/achievement) + likes/bookmarks/follows idempotent (toggle) + comments. Auteur enrichi avec name/photo/trade auto. Photos capped 6, tags capped 5.
+  - `GET /community/feed` (avec `liked_by_me` + `bookmarked_by_me`)
+  - `POST /community/posts` (artisan-only)
+  - `POST /community/posts/{id}/like|bookmark` (idempotent toggle)
+  - `GET/POST /community/posts/{id}/comments`
+  - `POST /community/follow/{user_id}` (400 self-follow)
+  - `GET /community/bookmarks/mine`
+- **Academy** : `GET /academy/categories` + `GET /academy/cards?category=` — architecture prête pour vrais contenus.
+- **Marketing** : `GET /marketing/modules` + `POST /marketing/{key}/interest` — waitlist idempotente pour futurs modules payants.
+- **Portfolio enrichissement** : `PATCH /artisans/me/gallery/{project_id}` — extend gallery avec description/city/duration_hours/completed_at/review_id.
+- **Collections nouvelles** : `community_posts`, `community_comments`, `community_likes`, `community_bookmarks`, `community_follows`, `marketing_interests`.
+- **Tests** : 41/41 pytest `test_pro_hub.py` + 237/237 régression = **278/278 GREEN**.
+
 ## Implemented (2026-07 — Sprint Enterprise / B2B)
 ### Multi-tenant, RBAC, Work Orders — one app pour B2C et B2B
 - **`services/enterprise.py`** : ACCOUNT_TYPES (6), ORG_TYPES (12), TEAM_ROLES (7), matrice PERMISSIONS déclarative avec 20 actions (org.update, team.invite, work_order.approve/reject/complete/cancel, documents.upload/delete, analytics.view, invoices.pay, integrations.configure...), WORK_ORDER_STATUSES (7), WORK_ORDER_TRANSITIONS état-machine strict.
