@@ -12,7 +12,8 @@
       "supportsTablet": true,
       "infoPlist": {
         "NSLocationWhenInUseUsageDescription": "Trouver les artisans proches de vous"
-      }
+      },
+      "bundleIdentifier": "com.emergent.reviensapp.uwn3nc"
     },
     "android": {
       "adaptiveIcon": {
@@ -23,7 +24,8 @@
       "permissions": [
         "ACCESS_FINE_LOCATION",
         "ACCESS_COARSE_LOCATION"
-      ]
+      ],
+      "package": "com.emergent.reviensapp.uwn3nc"
     },
     "web": {
       "bundler": "metro",

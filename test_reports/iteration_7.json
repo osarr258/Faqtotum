@@ -1,0 +1,51 @@
+{
+  "summary": "Full-stack testing of 'Ma Maison' (My Home) feature completed. Backend: 27/27 pytest tests passing (properties CRUD + cascade delete, equipment CRUD, documents CRUD, reminders CRUD with auto-due flag, timeline aggregation + sort desc + grouped by year, insights with demo_values fallback, 6 AI cards coming_soon, auth guards 401/404). Frontend (mobile 390x844): login OK, 'Ma Maison' tab visible in bottom nav, list shows existing property with counters, dashboard shows hero+quick actions+insights (100%, 6 interventions, 3240€)+entretiens vides+équipements récents vides+6 cartes IA BIENTÔT. Sub-screens (equipment, documents, timeline, insights, reminders, create) render correctly with proper empty states. Modal-based creation flows verified end-to-end: created equipment 'UI_TEST_Chaudière' and reminder 'UI_TEST_Rappel' via UI → both persisted and displayed. Test data cleaned up.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {
+        "endpoint": "PATCH /api/properties/{pid} and PATCH /api/properties/{pid}/equipment/{eid}",
+        "issue": "PATCH acts as PUT — the endpoint calls body.dict() on EquipmentInput/PropertyInput which reintroduces default None values for optional fields not sent by the client (e.g. installed_on, warranty_until, year_built). This nulls out previously-saved data if the client omits a field. Consider Pydantic model_dump(exclude_unset=True) or a dedicated partial-update model. Server: /app/backend/server.py:1229 (property update) and :1299 (equipment update)."
+      }
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {
+        "screen": "global",
+        "issues": [
+          "Runtime warnings in web preview: '\"shadow*\" style props are deprecated. Use \"boxShadow\"' and 'props.pointerEvents is deprecated. Use style.pointerEvents'. Harmless on native, but noisy in web preview. Consider updating helper style utils."
+        ]
+      }
+    ],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_my_home.py",
+    "/app/test_reports/pytest/my_home_results.xml"
+  ],
+  "action_items": [
+    "(Optional / minor) Fix PATCH semantics so partial updates don't wipe optional fields (use exclude_unset=True or a separate PropertyUpdate/EquipmentUpdate model). Not blocking — the frontend currently sends full payloads.",
+    "(Optional) Silence RN-Web deprecation warnings for shadow* and pointerEvents in shared style helpers."
+  ],
+  "critical_code_review_comments": [
+    "server.py is now 1509 lines — approaching the 700-line threshold; consider splitting My Home routes into a dedicated router module (properties.py, equipment.py, etc.).",
+    "PATCH endpoints use full input schema (EquipmentInput/PropertyInput) which forces clients to send all fields to avoid data loss. Prefer partial-update patterns.",
+    "All /properties routes correctly enforce ownership via _get_property() — no leakage across users (verified with 404 test).",
+    "Insights demo_values fallback works as documented (money=3240, interventions=6 when everything empty)."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_my_home.py (new pytest suite, 27 tests)"
+  ],
+  "success_rate": {
+    "backend": "100% (27/27)",
+    "frontend": "100% (all screens render + creation flows verified end-to-end)"
+  },
+  "seed_data_creation": "Used existing test client (client.test@auxora.fr) and existing property prop_b0858d7dc142. Test-created equipment/reminders/documents/properties were all cleaned up (TEST_/UI_TEST_ prefix + explicit teardown).",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Ma Maison feature is fully operational. Backend endpoints under /api/properties/** are covered by /app/backend/tests/test_my_home.py. Frontend flows tested: Ma Maison tab → property card → dashboard → equipment/documents/timeline/insights/reminders/create. Modal-based create for equipment and reminders both persist correctly. Only nit is that PATCH endpoints act like PUT (default-None fields overwrite existing data).",
+  "rca_of_issue": "No blocking issue. PATCH-as-PUT behavior detailed in backend_issues.minor: the server does `updates = body.dict()` on Pydantic input models with optional defaults set to None, which then overwrites saved values. Fix: `updates = body.model_dump(exclude_unset=True)` or introduce partial-update schemas."
+}

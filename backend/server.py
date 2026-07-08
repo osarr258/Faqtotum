@@ -1128,6 +1128,372 @@ async def seed_data():
     if missing:
         logger.info(f"Backfilled stats on {len(missing)} seeds")
 
+# ============================================================
+# MY HOME — Property / Equipment / Documents / Reminders / Timeline / Insights
+# ============================================================
+
+PROPERTY_TYPES = ["apartment", "house", "office", "commercial", "vacation"]
+EQUIPMENT_STATUSES = ["ok", "attention", "maintenance", "replace"]
+DOC_CATEGORIES = ["invoice", "guarantee", "manual", "certificate", "plan", "photo", "report", "other"]
+REMINDER_STATUSES = ["upcoming", "due", "done", "snoozed"]
+
+class PropertyInput(BaseModel):
+    name: str
+    type: str = "apartment"
+    address: Optional[str] = ""
+    surface: Optional[float] = None
+    year_built: Optional[int] = None
+    photos: List[str] = Field(default_factory=list)  # base64 or URL
+    notes: Optional[str] = ""
+
+class EquipmentInput(BaseModel):
+    name: str
+    category: Optional[str] = "other"  # water_heater, boiler, heat_pump, panel, ac, vmc, roof, windows, doors, smoke_detector, solar, ev_charger, water_softener, other
+    brand: Optional[str] = ""
+    model: Optional[str] = ""
+    serial_number: Optional[str] = ""
+    installed_on: Optional[str] = None  # ISO date
+    installer: Optional[str] = ""
+    warranty_until: Optional[str] = None
+    photos: List[str] = Field(default_factory=list)
+    documents: List[str] = Field(default_factory=list)  # document ids
+    status: str = "ok"
+    notes: Optional[str] = ""
+
+class DocumentInput(BaseModel):
+    title: str
+    category: str = "other"
+    file_uri: Optional[str] = ""  # base64 or URL
+    equipment_id: Optional[str] = None
+    notes: Optional[str] = ""
+
+class ReminderInput(BaseModel):
+    title: str
+    due_on: str  # ISO date
+    frequency: Optional[str] = None  # once | monthly | yearly | ...
+    equipment_id: Optional[str] = None
+    notes: Optional[str] = ""
+
+async def _get_property(pid: str, user_id: str) -> dict:
+    prop = await db.properties.find_one({"property_id": pid, "user_id": user_id}, {"_id": 0})
+    if not prop:
+        raise HTTPException(status_code=404, detail="Bien introuvable")
+    return prop
+
+# ----- Properties CRUD -----
+@api_router.get("/properties")
+async def list_properties(user=Depends(get_current_user)):
+    props = await db.properties.find({"user_id": user["user_id"]}, {"_id": 0}).sort("created_at", -1).to_list(200)
+    # attach quick counts
+    out = []
+    for p in props:
+        pid = p["property_id"]
+        equip_count = await db.property_equipment.count_documents({"property_id": pid})
+        doc_count = await db.property_documents.count_documents({"property_id": pid})
+        reminder_count = await db.property_reminders.count_documents({"property_id": pid, "status": {"$in": ["upcoming", "due"]}})
+        p["equipment_count"] = equip_count
+        p["document_count"] = doc_count
+        p["reminder_count"] = reminder_count
+        out.append(p)
+    return out
+
+@api_router.post("/properties")
+async def create_property(body: PropertyInput, user=Depends(get_current_user)):
+    if body.type not in PROPERTY_TYPES:
+        raise HTTPException(status_code=400, detail="Type de bien invalide")
+    prop = {
+        "property_id": new_id("prop"),
+        "user_id": user["user_id"],
+        "name": body.name.strip(),
+        "type": body.type,
+        "address": (body.address or "").strip(),
+        "surface": body.surface,
+        "year_built": body.year_built,
+        "photos": body.photos or [],
+        "notes": (body.notes or "").strip(),
+        "created_at": now_utc().isoformat(),
+        "updated_at": now_utc().isoformat(),
+    }
+    await db.properties.insert_one(dict(prop))
+    return prop
+
+@api_router.get("/properties/{pid}")
+async def get_property(pid: str, user=Depends(get_current_user)):
+    return await _get_property(pid, user["user_id"])
+
+@api_router.patch("/properties/{pid}")
+async def update_property(pid: str, body: PropertyInput, user=Depends(get_current_user)):
+    await _get_property(pid, user["user_id"])
+    if body.type not in PROPERTY_TYPES:
+        raise HTTPException(status_code=400, detail="Type de bien invalide")
+    updates = {
+        "name": body.name.strip(),
+        "type": body.type,
+        "address": (body.address or "").strip(),
+        "surface": body.surface,
+        "year_built": body.year_built,
+        "photos": body.photos or [],
+        "notes": (body.notes or "").strip(),
+        "updated_at": now_utc().isoformat(),
+    }
+    await db.properties.update_one({"property_id": pid}, {"$set": updates})
+    return await db.properties.find_one({"property_id": pid}, {"_id": 0})
+
+@api_router.delete("/properties/{pid}")
+async def delete_property(pid: str, user=Depends(get_current_user)):
+    await _get_property(pid, user["user_id"])
+    await db.properties.delete_one({"property_id": pid})
+    await db.property_equipment.delete_many({"property_id": pid})
+    await db.property_documents.delete_many({"property_id": pid})
+    await db.property_reminders.delete_many({"property_id": pid})
+    return {"ok": True}
+
+# ----- Equipment -----
+@api_router.get("/properties/{pid}/equipment")
+async def list_equipment(pid: str, user=Depends(get_current_user)):
+    await _get_property(pid, user["user_id"])
+    items = await db.property_equipment.find({"property_id": pid}, {"_id": 0}).sort("created_at", -1).to_list(500)
+    return items
+
+@api_router.post("/properties/{pid}/equipment")
+async def create_equipment(pid: str, body: EquipmentInput, user=Depends(get_current_user)):
+    await _get_property(pid, user["user_id"])
+    if body.status not in EQUIPMENT_STATUSES:
+        raise HTTPException(status_code=400, detail="Statut invalide")
+    doc = {
+        "equipment_id": new_id("eq"),
+        "property_id": pid,
+        "user_id": user["user_id"],
+        "name": body.name.strip(),
+        "category": body.category or "other",
+        "brand": body.brand or "",
+        "model": body.model or "",
+        "serial_number": body.serial_number or "",
+        "installed_on": body.installed_on,
+        "installer": body.installer or "",
+        "warranty_until": body.warranty_until,
+        "photos": body.photos or [],
+        "documents": body.documents or [],
+        "status": body.status or "ok",
+        "notes": body.notes or "",
+        "created_at": now_utc().isoformat(),
+        "updated_at": now_utc().isoformat(),
+    }
+    await db.property_equipment.insert_one(dict(doc))
+    return doc
+
+@api_router.get("/properties/{pid}/equipment/{eid}")
+async def get_equipment(pid: str, eid: str, user=Depends(get_current_user)):
+    await _get_property(pid, user["user_id"])
+    e = await db.property_equipment.find_one({"equipment_id": eid, "property_id": pid}, {"_id": 0})
+    if not e:
+        raise HTTPException(status_code=404, detail="Équipement introuvable")
+    return e
+
+@api_router.patch("/properties/{pid}/equipment/{eid}")
+async def update_equipment(pid: str, eid: str, body: EquipmentInput, user=Depends(get_current_user)):
+    await _get_property(pid, user["user_id"])
+    e = await db.property_equipment.find_one({"equipment_id": eid, "property_id": pid})
+    if not e:
+        raise HTTPException(status_code=404, detail="Équipement introuvable")
+    updates = body.dict()
+    updates["updated_at"] = now_utc().isoformat()
+    await db.property_equipment.update_one({"equipment_id": eid}, {"$set": updates})
+    return await db.property_equipment.find_one({"equipment_id": eid}, {"_id": 0})
+
+@api_router.delete("/properties/{pid}/equipment/{eid}")
+async def delete_equipment(pid: str, eid: str, user=Depends(get_current_user)):
+    await _get_property(pid, user["user_id"])
+    await db.property_equipment.delete_one({"equipment_id": eid, "property_id": pid})
+    return {"ok": True}
+
+# ----- Documents -----
+@api_router.get("/properties/{pid}/documents")
+async def list_documents(pid: str, user=Depends(get_current_user)):
+    await _get_property(pid, user["user_id"])
+    return await db.property_documents.find({"property_id": pid}, {"_id": 0}).sort("created_at", -1).to_list(500)
+
+@api_router.post("/properties/{pid}/documents")
+async def create_document(pid: str, body: DocumentInput, user=Depends(get_current_user)):
+    await _get_property(pid, user["user_id"])
+    if body.category not in DOC_CATEGORIES:
+        raise HTTPException(status_code=400, detail="Catégorie invalide")
+    d = {
+        "document_id": new_id("doc"),
+        "property_id": pid,
+        "user_id": user["user_id"],
+        "title": body.title.strip(),
+        "category": body.category,
+        "file_uri": body.file_uri or "",
+        "equipment_id": body.equipment_id,
+        "notes": body.notes or "",
+        "created_at": now_utc().isoformat(),
+    }
+    await db.property_documents.insert_one(dict(d))
+    return d
+
+@api_router.delete("/properties/{pid}/documents/{doc_id}")
+async def delete_document(pid: str, doc_id: str, user=Depends(get_current_user)):
+    await _get_property(pid, user["user_id"])
+    await db.property_documents.delete_one({"document_id": doc_id, "property_id": pid})
+    return {"ok": True}
+
+# ----- Reminders -----
+@api_router.get("/properties/{pid}/reminders")
+async def list_reminders(pid: str, user=Depends(get_current_user)):
+    await _get_property(pid, user["user_id"])
+    items = await db.property_reminders.find({"property_id": pid}, {"_id": 0}).sort("due_on", 1).to_list(500)
+    # Auto-flag due
+    today = now_utc().date().isoformat()
+    for r in items:
+        if r.get("status") == "upcoming" and r.get("due_on") and r["due_on"] <= today:
+            r["status"] = "due"
+    return items
+
+@api_router.post("/properties/{pid}/reminders")
+async def create_reminder(pid: str, body: ReminderInput, user=Depends(get_current_user)):
+    await _get_property(pid, user["user_id"])
+    r = {
+        "reminder_id": new_id("rem"),
+        "property_id": pid,
+        "user_id": user["user_id"],
+        "title": body.title.strip(),
+        "due_on": body.due_on,
+        "frequency": body.frequency,
+        "equipment_id": body.equipment_id,
+        "notes": body.notes or "",
+        "status": "upcoming",
+        "created_at": now_utc().isoformat(),
+    }
+    await db.property_reminders.insert_one(dict(r))
+    return r
+
+@api_router.patch("/properties/{pid}/reminders/{rid}")
+async def update_reminder(pid: str, rid: str, body: dict, user=Depends(get_current_user)):
+    await _get_property(pid, user["user_id"])
+    if "status" in body and body["status"] not in REMINDER_STATUSES:
+        raise HTTPException(status_code=400, detail="Statut invalide")
+    body["updated_at"] = now_utc().isoformat()
+    await db.property_reminders.update_one({"reminder_id": rid, "property_id": pid}, {"$set": body})
+    return await db.property_reminders.find_one({"reminder_id": rid}, {"_id": 0})
+
+@api_router.delete("/properties/{pid}/reminders/{rid}")
+async def delete_reminder(pid: str, rid: str, user=Depends(get_current_user)):
+    await _get_property(pid, user["user_id"])
+    await db.property_reminders.delete_one({"reminder_id": rid, "property_id": pid})
+    return {"ok": True}
+
+# ----- Timeline (aggregated) -----
+@api_router.get("/properties/{pid}/timeline")
+async def property_timeline(pid: str, user=Depends(get_current_user)):
+    await _get_property(pid, user["user_id"])
+    events = []
+    # equipment install events
+    async for e in db.property_equipment.find({"property_id": pid}, {"_id": 0}):
+        if e.get("installed_on"):
+            events.append({
+                "id": e["equipment_id"],
+                "type": "equipment_installed",
+                "title": f"{e['name']} installé",
+                "subtitle": e.get("brand") or "",
+                "date": e["installed_on"],
+                "icon": "cog",
+                "ref": {"equipment_id": e["equipment_id"]},
+            })
+    # documents added
+    async for d in db.property_documents.find({"property_id": pid}, {"_id": 0}):
+        events.append({
+            "id": d["document_id"],
+            "type": "document",
+            "title": d["title"],
+            "subtitle": d["category"],
+            "date": d["created_at"][:10],
+            "icon": "document-text",
+            "ref": {"document_id": d["document_id"]},
+        })
+    # linked bookings (interventions completed on this property)
+    async for b in db.bookings.find({"client_id": user["user_id"], "property_id": pid}, {"_id": 0}):
+        events.append({
+            "id": b["booking_id"],
+            "type": "intervention",
+            "title": b.get("description", "Intervention"),
+            "subtitle": f"Statut: {b.get('status', 'pending')}",
+            "date": (b.get("scheduled_at") or b.get("created_at", ""))[:10],
+            "icon": "briefcase",
+            "ref": {"booking_id": b["booking_id"]},
+        })
+    # reminders completed
+    async for r in db.property_reminders.find({"property_id": pid, "status": "done"}, {"_id": 0}):
+        events.append({
+            "id": r["reminder_id"],
+            "type": "reminder_done",
+            "title": r["title"],
+            "subtitle": "Rappel terminé",
+            "date": r.get("updated_at", r.get("due_on", ""))[:10],
+            "icon": "checkmark-circle",
+            "ref": {"reminder_id": r["reminder_id"]},
+        })
+    # sort desc by date
+    events.sort(key=lambda x: x["date"] or "", reverse=True)
+    # group by year
+    grouped: dict = {}
+    for ev in events:
+        y = (ev["date"] or "")[:4] or "—"
+        grouped.setdefault(y, []).append(ev)
+    return {"events": events, "grouped": grouped}
+
+# ----- Insights -----
+@api_router.get("/properties/{pid}/insights")
+async def property_insights(pid: str, user=Depends(get_current_user)):
+    await _get_property(pid, user["user_id"])
+    equipment_count = await db.property_equipment.count_documents({"property_id": pid})
+    ok_count = await db.property_equipment.count_documents({"property_id": pid, "status": "ok"})
+    attention_count = await db.property_equipment.count_documents({"property_id": pid, "status": {"$in": ["attention", "maintenance", "replace"]}})
+    document_count = await db.property_documents.count_documents({"property_id": pid})
+    upcoming = await db.property_reminders.count_documents({"property_id": pid, "status": {"$in": ["upcoming", "due"]}})
+    # Interventions linked
+    interventions = await db.bookings.count_documents({"client_id": user["user_id"], "property_id": pid})
+    # Money invested = sum of intervention amounts if any
+    money = 0
+    async for b in db.bookings.find({"client_id": user["user_id"], "property_id": pid}, {"_id": 0, "amount": 1}):
+        try:
+            money += float(b.get("amount") or 0)
+        except Exception:
+            pass
+    # Realistic demo values when empty so the UI feels alive from day 1
+    if equipment_count == 0 and interventions == 0 and money == 0:
+        demo = True
+        money = 3240
+        interventions = 6
+    else:
+        demo = False
+    health = 100 if equipment_count == 0 else int(round((ok_count / max(equipment_count, 1)) * 100))
+    return {
+        "equipment_count": equipment_count,
+        "equipment_ok": ok_count,
+        "equipment_attention": attention_count,
+        "document_count": document_count,
+        "upcoming_maintenance": upcoming,
+        "interventions": interventions,
+        "money_invested": money,
+        "average_health": health,
+        "demo_values": demo,
+    }
+
+# ----- AI Cards (Coming Soon placeholders) -----
+@api_router.get("/properties/{pid}/ai-cards")
+async def property_ai_cards(pid: str, user=Depends(get_current_user)):
+    await _get_property(pid, user["user_id"])
+    cards = [
+        {"key": "equipment_health", "title": "Santé des équipements", "subtitle": "IA analysera l'état et la longévité de vos équipements.", "icon": "pulse"},
+        {"key": "maintenance_prediction", "title": "Maintenance prédictive", "subtitle": "L'IA anticipera les entretiens critiques avant les pannes.", "icon": "calendar"},
+        {"key": "risk_detection", "title": "Détection de risques", "subtitle": "Identifiera les risques (fuite, incendie, humidité) automatiquement.", "icon": "shield-checkmark"},
+        {"key": "energy_optimization", "title": "Optimisation énergétique", "subtitle": "Recommandations pour baisser vos factures et l'empreinte carbone.", "icon": "flash"},
+        {"key": "warranty_expiration", "title": "Expiration garanties", "subtitle": "Vous préviendra avant chaque fin de garantie.", "icon": "ribbon"},
+        {"key": "recommended_inspection", "title": "Inspection recommandée", "subtitle": "Suggérera les diagnostics à réaliser selon votre bien.", "icon": "sparkles"},
+    ]
+    return [{**c, "status": "coming_soon"} for c in cards]
+
 app.include_router(api_router)
 
 app.add_middleware(
