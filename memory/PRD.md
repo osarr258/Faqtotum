@@ -23,6 +23,26 @@ Application de mise en relation à la Uber/Airbnb connectant les clients (partic
 - Tabs client (5): Accueil, **Ma Maison**, Réservations, Messages, Profil.
 - Tabs artisan: Tableau de bord, Mon profil, Abonnement.
 
+## Implemented (2026-07 — Sprint Trust Engine)
+### AI Trust Engine — Heart of the platform (NOUVEAU)
+- **`services/trust_engine.py`** : moteur modulaire, déterministe, ML-ready. 20 signaux pondérés (WEIGHTS somme = 100). Chaque facteur est une fonction pure séparée, `feature_vector()` produit le vecteur normalisé prêt pour un modèle ML.
+- **Score 0-100 jamais éditable** : recalculé automatiquement à chaque hook (POST /reviews, PATCH /bookings, POST /disputes, POST /artisans/me). Persistance idempotente via `trust_engine.persist(db, artisan_id)`.
+- **Signaux** : identity_verified, insurance_verified, business_registered, years_experience, customer_rating, jobs_completed, acceptance_rate, cancellation_rate, response_speed, arrival_time, punctuality, dispute_history, customer_satisfaction, completion_rate, recent_activity, availability, distance_relevance, speciality_match, emergency_capability, platform_loyalty.
+- **Pénalités additives** : unresolved_dispute, resolved_severe/moderate/minor, recent_no_activity_60d, high_cancellation_20p.
+- **Endpoints backend (8 nouveaux)** :
+  - `GET /api/artisans/{aid}/trust` — breakdown complet
+  - `GET /api/artisans/{aid}/confidence-card` — carte client-safe (verified/insured/reasons FR/badges)
+  - `GET /api/artisans/{aid}/badges` — badges calculés
+  - `GET /api/artisans/me/scoreboard` — pro-only : strengths + improvements + recos FR
+  - `POST /api/artisans/{aid}/recompute-trust` — recompute idempotent
+  - `POST /api/disputes` — auto-pénalité par sévérité (minor/moderate/severe). Sévère → requires_manual_review, jamais de ban auto.
+  - `GET /api/disputes/mine` — liste selon rôle (client=opened / artisan=against)
+  - `POST /api/matching/smart-recommendations` — alternatives (higher_rated/faster/closer/cheaper/earlier_slot)
+- **Enrichissement automatique** : `GET /api/artisans/{aid}` retourne désormais `trust_score`, `confidence_card`, `badges` — pas de nouveau écran nécessaire côté UI, la carte de confiance existante s'enrichit.
+- **Badges** : verified, insured, background_checked, premium (trust≥95), top_rated (rating≥4.8, gold), emergency_expert (gold), fast_response (silver), jobs_bronze/silver/gold/platinum (25/100/500/1000 missions, mutuellement exclusifs), highly_recommended (gold), loyal_partner (12+ mois).
+- **Backfill idempotent** au démarrage : 12 artisans mis à jour avec les nouveaux signaux + recompute automatique.
+- **Tests** : 23/23 pytest `test_trust_engine.py` + 27/27 régressions `test_my_home.py` — GREEN.
+
 ## Implemented (2026-07 — Sprint My Home)
 ### Ma Maison — Home Operating System (NOUVEAU)
 - **Multi-biens** : 5 types (apartment, house, office, commercial, vacation). Photos base64, adresse, surface, année, notes.
