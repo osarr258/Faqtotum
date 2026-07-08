@@ -23,6 +23,27 @@ Application de mise en relation à la Uber/Airbnb connectant les clients (partic
 - Tabs client (5): Accueil, **Ma Maison**, Réservations, Messages, Profil.
 - Tabs artisan: Tableau de bord, Mon profil, Abonnement.
 
+## Implemented (2026-07 — Sprint Enterprise / B2B)
+### Multi-tenant, RBAC, Work Orders — one app pour B2C et B2B
+- **`services/enterprise.py`** : ACCOUNT_TYPES (6), ORG_TYPES (12), TEAM_ROLES (7), matrice PERMISSIONS déclarative avec 20 actions (org.update, team.invite, work_order.approve/reject/complete/cancel, documents.upload/delete, analytics.view, invoices.pay, integrations.configure...), WORK_ORDER_STATUSES (7), WORK_ORDER_TRANSITIONS état-machine strict.
+- **24 nouveaux endpoints** (total backend : **142 routes**) :
+  - **Organizations** : POST/GET mine/PATCH `/organizations`
+  - **Team members** : GET/POST/PATCH/DELETE avec RBAC
+  - **Property linking** : `POST /organizations/{oid}/properties/link` + `GET /organizations/{oid}/properties`
+  - **Work Orders** : POST create (employee→pending_approval auto, sinon draft), GET list (multi-org auto scoping), GET one, `POST /work-orders/{woid}/transition` (validation workflow + permission par status)
+  - **Business Dashboard** : `GET /organizations/{oid}/dashboard` — 11 métriques agrégées
+  - **Business Analytics** : completed/urgent WO, frequent_issues top 5, top_professionals top 5, average_property_health cross-property
+  - **Multi-Location Map** : `GET /organizations/{oid}/map` — lat/lng + open_interventions + urgent + upcoming
+  - **Business Documents** : 9 catégories (invoice/contract/report/certificate/guarantee/manual/inspection/safety/other) avec RBAC upload/delete
+  - **Integrations stubs** : `GET /integrations/available` (10 items ERP/Accounting/FM/IoT/BMS all `coming_soon`) + `POST /organizations/{oid}/integrations` (owner-only, persiste config pour activation future)
+  - **Meta** : `GET /enterprise/roles` (matrice complète), `/enterprise/account-types`
+- **RBAC déclaratif** : chaque endpoint gate via `_require_org_permission(user_id, org_id, action)`. Non-membre → 403, permission manquante → 403 avec message clair.
+- **Transition workflow** : `enterprise.WORK_ORDER_TRANSITIONS` fait office de graphe strict (draft→{pending_approval,cancelled}, pending_approval→{approved,rejected,cancelled}, approved→{in_progress,cancelled}, in_progress→{completed,cancelled}, completed/rejected/cancelled = terminal). Chaque transition écrit dans `history[]`.
+- **Employee creates → pending_approval** automatiquement (workflow d'approbation). Manager/owner créent en draft (édition libre).
+- **UI intacte** — 0 modif frontend. L'interface s'adaptera au prochain sprint UI (Business dashboard, work orders board, multi-location map).
+- **Tests** : 60/60 pytest `test_enterprise_sprint.py` + 177/177 régression = **237/237 GREEN**.
+- **Collections nouvelles** : `organizations`, `organization_members`, `work_orders`, `org_documents`, `org_integrations`. Champ `properties.organization_id` ajouté (nullable, backward-compat).
+
 ## Implemented (2026-07 — Sprint Growth & Retention)
 ### Ecosystem for long-term retention (25+ endpoints)
 - **`services/growth.py`** : pro levels (5 tiers bronze/silver/gold/platinum/elite basés sur Trust + jobs, JAMAIS subscription), loyalty tiers (member/silver/gold/platinum/vip), health_label mapping, maintenance intervals par catégorie d'équipement, referral codes déterministes (uuid5 → AUX + 5 hex).
