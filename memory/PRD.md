@@ -197,3 +197,23 @@ Application de mise en relation à la Uber/Airbnb connectant les clients (partic
 - Séquence texte : atmosphère (0-2s) → logo AUXORA (2s) → titre (4s) → sous-titre (6s) → boutons (8s, fixes).
 - 3 CTA : "Créer un compte" (gold), "Se connecter" (glass), "Découvrir Auxora →" (subtile lien vers /onboarding).
 - Logout/RGPD delete redirigent vers `/welcome`.
+
+## Sprint 10 — Helpo AI-First Home (LIVRÉ)
+- Refonte totale de `/app/frontend/app/(client)/index.tsx` — plus une marketplace, une IA-first.
+- Nouveau nom d'assistant : **Helpo** (avatar avec halo doré animé).
+- Design tokens : #0B0B0B (fond), #FFFFFF (primary), #C8A96B (accent gold), #B8B8B8 (secondary).
+- Input ChatGPT-style avec :
+  - Placeholder rotatif toutes les 2.6s (6 exemples fr)
+  - Curseur clignotant doré
+  - Multiline autogrow (max 120px)
+  - Actions : Photo (image-picker), Voix (concierge), Urgence
+  - Bouton envoi doré rond avec arrow-up
+- Après envoi : bulle utilisateur → dots typing animés → bulle IA Helpo avec :
+  - Métier identifié + urgence détectée
+  - Conseil de sécurité (shield icon)
+  - Meta chips : durée / prix / confiance IA
+  - CTA "Voir les professionnels" (or)
+- Cards artisans (Airbnb-style) : photo circulaire + badge verified + rating + trade + city + arrival + hourly rate + Dispo pill
+- Section trust "POURQUOI AUXORA ?" (3 cards) affichée avant conversation
+- Backend : réutilise `/api/ai/diagnose` (GPT-4o via Emergent LLM Key)
+- Tab bar : "Accueil" → "Helpo"

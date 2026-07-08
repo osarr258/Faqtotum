@@ -21,7 +21,7 @@ export default function ClientLayout() {
     >
       <Tabs.Screen
         name="index"
-        options={{ title: "Accueil", tabBarIcon: ({ color, size }) => <Ionicons name="sparkles" size={size} color={color} /> }}
+        options={{ title: "Helpo", tabBarIcon: ({ color, size }) => <Ionicons name="sparkles" size={size} color={color} /> }}
       />
       <Tabs.Screen
         name="home"
