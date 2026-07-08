@@ -1,0 +1,50 @@
+{
+  "summary": "Sprint FinTech (Stripe Connect + Escrow + Subscriptions + Admin) backend-only testing complete. 28/28 new pytest tests pass in /app/backend/tests/test_fintech_sprint.py covering ALL 22 items from the review request. Full regression green: 50/50 (test_my_home.py 27/27 + test_trust_engine.py 23/23). Grand total: 78/78 backend tests passing. No frontend testing performed (per request: backend only). MOCK_MODE confirmed active via deterministic ID prefixes (acct_mock_, pay_mock_, tr_mock_, re_mock_, sub_mock_ all observed). Commission precedence chain verified end-to-end via real escrow releases: global 1500 bps -> promo 500 bps -> exemption 0 bps (floored at 200 min_cents). Admin gating strict: /admin/* returns 403 for non-admin (pro.test) and 200 for client.test@auxora.fr (in ADMIN_EMAILS). Webhook idempotency confirmed with duplicate=true on second POST of same event_id. State machine transitions verified: pending -> held (mock-confirm) -> released/refunded/frozen; only held is releasable; only held is freezable; frozen refundable. Matching non-bias verified statically: /app/backend/services/matching.py has ZERO occurrences of 'subscription' or 'is_subscribed'.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {
+        "endpoint": "POST /api/escrow/{booking_id}/release",
+        "issue": "Commission with bps=0 (exemption) still charges the min_cents floor (200 = 2€), because commission_amount() enforces `max(calc, min_cents)`. If truly-free exemptions are ever needed, either lower min_cents to 0 for exemption rules or bypass floor when bps==0. Current design intentional per DEFAULT_COMMISSION_MIN_CENTS=200; documenting for product."
+      },
+      {
+        "endpoint": "POST /api/stripe/webhooks",
+        "issue": "For payment_intent.succeeded, uses `async for` inside `$in` list-comprehension to fetch payment_ids. Works but a two-step await (list first, then update_many) would be cleaner. Not blocking."
+      }
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_fintech_sprint.py",
+    "/app/test_reports/pytest/fintech_sprint.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py is now 2242 lines — STRONGLY recommend extracting fintech routers (connect_router.py, payments_router.py, escrow_router.py, subscriptions_router.py, admin_router.py) before adding installments/BNPL. Same recommendation as iteration_8.",
+    "services/payments.py (~340 lines) is a clean, self-contained wrapper — MOCK_MODE branch on every Stripe call, deterministic _mock_id() prefixes, resolve_commission_bps() precedence documented in docstring. Excellent module.",
+    "Commission precedence in resolve_commission_bps() correctly orders: exemption (artisan-specific) > active promo (lowest bps wins via sort) > trade-specific > platform_config global > DEFAULT (1000). Verified via real release flow.",
+    "Webhook idempotency correctly uses stripe_events collection with event_id key. Duplicate events return {received:true, duplicate:true} without side effects. Verified.",
+    "MOCK_MODE detection at services/payments.py:50 catches empty string, 'sk_test_emergent', and 'sk_test_placeholder' — safe fallback. When a real key is set, ONLY that line switches behavior; zero code changes needed elsewhere.",
+    "Admin gating via require_admin() uses BOTH role=='admin' OR email in ADMIN_EMAILS env allow-list — resilient. client.test@auxora.fr correctly gated as admin for tests.",
+    "matching.py verified NOT to reference subscription tiers — grep for 'subscription' and 'is_subscribed' returns zero results. Ranking invariant preserved.",
+    "State machine transitions (pending -> held -> released|refunded|frozen; frozen -> refunded) enforced by explicit 400 responses on invalid state. Good defensive coding.",
+    "Subscriptions public catalog correctly strips stripe_price_id via dict comprehension at server.py:1612 — no price ID leak. Verified.",
+    "Audit logs written on every state transition (connect create, payment intent, mock confirm, release, refund, freeze, subscription events, commission rule changes) — compliance-ready."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_fintech_sprint.py (new — 28 tests, ~330 lines)"
+  ],
+  "success_rate": {
+    "backend": "100% (28/28 FinTech + 27/27 my_home + 23/23 trust_engine = 78/78)",
+    "frontend": "not tested (backend-only per request)"
+  },
+  "seed_data_creation": "During tests: created ~6 bookings (all TEST_ description) + associated payment intents, escrows (some released, some refunded), transfers, refunds, and audit logs on pro.test@auxora.fr artisan account (art_2dfb71f00c16). Also created one additional throwaway client (TEST_other_*@auxora.fr) to verify freeze 403 for non-owner. All test data prefixed TEST_ or auto-cleaned via rule deactivation. No pollution of seed artisans or platform_config beyond global_bps set/reset to 1000 at test end.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Sprint FinTech is production-ready in MOCK_MODE. All 22 acceptance items from the review request are verified. To flip to live Stripe, only backend/.env STRIPE_API_KEY needs to change to a real sk_test_.../sk_live_... key — payments.MOCK_MODE will flip automatically and every Stripe wrapper will hit the real API. STRIPE_WEBHOOK_SECRET must also be set for signature verification. New endpoints (27) all correctly gated, all state transitions audited, webhook idempotent. Next testing agents can rerun /app/backend/tests/test_fintech_sprint.py as regression for any future payment work — it validates end-to-end commission precedence and won't leak stripe_price_id."
+}

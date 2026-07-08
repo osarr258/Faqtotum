@@ -14,9 +14,9 @@ from emergentintegrations.llm.chat import LlmChat, UserMessage, ImageContent
 from emergentintegrations.llm.openai.speech_to_text import OpenAISpeechToText
 from pathlib import Path
 from pydantic import BaseModel, Field, EmailStr
-from typing import List, Optional
+from typing import List, Optional, Dict
 from datetime import datetime, timezone, timedelta
-from services import matching, calendar_sync, trust_engine
+from services import matching, calendar_sync, trust_engine, payments
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -1327,6 +1327,535 @@ async def matching_smart_recos(body: SmartRecoInput, user=Depends(get_current_us
     ctx = {"lat": picked.get("lat"), "lng": picked.get("lng"), "urgency": body.urgency}
     ranked = matching.rank(pool, ctx)[:20]
     return trust_engine.smart_alternatives(picked, ranked)
+
+
+# ============================================================
+# PAYMENTS & ESCROW — Stripe Connect, Commissions, Subscriptions
+# ============================================================
+
+ADMIN_EMAILS = {e.strip().lower() for e in os.environ.get("ADMIN_EMAILS", "").split(",") if e.strip()}
+ESCROW_STATES = ["pending", "held", "released", "refunded", "frozen"]
+
+async def require_admin(user=Depends(get_current_user)):
+    if user.get("role") == "admin" or user.get("email", "").lower() in ADMIN_EMAILS:
+        return user
+    raise HTTPException(status_code=403, detail="Réservé aux administrateurs")
+
+class ConnectOnboardInput(BaseModel):
+    country: str = "FR"
+
+class PaymentIntentInput(BaseModel):
+    booking_id: str
+
+class RefundInput(BaseModel):
+    reason: Optional[str] = "requested_by_customer"
+    amount_cents: Optional[int] = None
+
+class SubscribePlanInput(BaseModel):
+    plan_key: str  # starter | professional | enterprise
+
+class CommissionConfigInput(BaseModel):
+    global_bps: int
+    min_cents: int = payments.DEFAULT_COMMISSION_MIN_CENTS
+
+class CommissionRuleInput(BaseModel):
+    kind: str  # trade | promo | exemption
+    bps: int
+    trade: Optional[str] = None
+    artisan_id: Optional[str] = None
+    start_at: Optional[str] = None
+    end_at: Optional[str] = None
+    label: Optional[str] = ""
+
+class DisputeFreezeInput(BaseModel):
+    booking_id: str
+    reason: str
+
+# ---------- Connect onboarding (pros) ----------
+@api_router.post("/connect/onboard")
+async def connect_onboard(body: ConnectOnboardInput, user=Depends(get_current_user)):
+    if user.get("role") != "artisan":
+        raise HTTPException(status_code=403, detail="Réservé aux artisans")
+    profile = await db.artisan_profiles.find_one({"user_id": user["user_id"]}, {"_id": 0})
+    if not profile:
+        raise HTTPException(status_code=400, detail="Créez d'abord votre profil artisan")
+
+    existing = await db.stripe_accounts.find_one({"user_id": user["user_id"]}, {"_id": 0})
+    if existing:
+        acct_id = existing["stripe_account_id"]
+    else:
+        acct = payments.create_connect_account(user["email"], body.country)
+        acct_id = acct["id"]
+        await db.stripe_accounts.insert_one({
+            "user_id": user["user_id"],
+            "artisan_id": profile["artisan_id"],
+            "stripe_account_id": acct_id,
+            "country": body.country,
+            "charges_enabled": False,
+            "payouts_enabled": False,
+            "details_submitted": False,
+            "created_at": payments.now_utc_iso(),
+        })
+        await payments.audit(db, user["user_id"], "connect.account_created", acct_id, {"artisan_id": profile["artisan_id"]})
+
+    link = payments.create_account_link(
+        acct_id,
+        return_url=f"{payments.PLATFORM_URL}/connect/return",
+        refresh_url=f"{payments.PLATFORM_URL}/connect/refresh",
+    )
+    return {"onboarding_url": link["url"], "expires_at": link.get("expires_at"), "stripe_account_id": acct_id, "mock_mode": payments.MOCK_MODE}
+
+@api_router.get("/connect/status")
+async def connect_status(user=Depends(get_current_user)):
+    row = await db.stripe_accounts.find_one({"user_id": user["user_id"]}, {"_id": 0})
+    if not row:
+        return {"connected": False}
+    fresh = payments.retrieve_account(row["stripe_account_id"])
+    await db.stripe_accounts.update_one(
+        {"stripe_account_id": row["stripe_account_id"]},
+        {"$set": {
+            "charges_enabled": fresh.get("charges_enabled", False),
+            "payouts_enabled": fresh.get("payouts_enabled", False),
+            "details_submitted": fresh.get("details_submitted", False),
+            "requirements": fresh.get("requirements", {}),
+            "updated_at": payments.now_utc_iso(),
+        }},
+    )
+    return {
+        "connected": True,
+        "stripe_account_id": row["stripe_account_id"],
+        "charges_enabled": fresh.get("charges_enabled", False),
+        "payouts_enabled": fresh.get("payouts_enabled", False),
+        "details_submitted": fresh.get("details_submitted", False),
+        "requirements": fresh.get("requirements", {}),
+        "mock_mode": payments.MOCK_MODE,
+    }
+
+# ---------- Customer payment (creates escrow) ----------
+@api_router.post("/payments/create-intent")
+async def create_payment_intent(body: PaymentIntentInput, user=Depends(get_current_user)):
+    booking = await db.bookings.find_one({"booking_id": body.booking_id, "client_id": user["user_id"]}, {"_id": 0})
+    if not booking:
+        raise HTTPException(status_code=404, detail="Réservation introuvable")
+    existing = await db.payments.find_one({"booking_id": body.booking_id, "status": {"$in": ["requires_confirmation", "succeeded"]}}, {"_id": 0})
+    if existing:
+        return {"payment_id": existing["payment_id"], "client_secret": existing.get("client_secret"), "amount_cents": existing["amount_cents"]}
+
+    artisan = await db.artisan_profiles.find_one({"artisan_id": booking["artisan_id"]}, {"_id": 0}) or {}
+    hourly = int(round((artisan.get("hourly_rate") or 60) * 100))  # gross cents
+    amount = max(hourly, 2000)  # min 20€
+    intent = payments.create_payment_intent(
+        amount_cents=amount,
+        currency="eur",
+        metadata={"booking_id": body.booking_id, "client_id": user["user_id"], "artisan_id": booking["artisan_id"]},
+        customer_email=user["email"],
+    )
+    payment_id = payments._mock_id("pay") if payments.MOCK_MODE else new_id("pay")
+    doc = {
+        "payment_id": payment_id,
+        "booking_id": body.booking_id,
+        "client_id": user["user_id"],
+        "artisan_id": booking["artisan_id"],
+        "stripe_payment_intent_id": intent["id"],
+        "client_secret": intent.get("client_secret"),
+        "amount_cents": amount,
+        "currency": "eur",
+        "status": intent.get("status", "requires_confirmation"),
+        "created_at": payments.now_utc_iso(),
+    }
+    await db.payments.insert_one(dict(doc))
+    # Create escrow envelope (state=pending; becomes 'held' once webhook confirms).
+    await db.escrows.insert_one({
+        "escrow_id": new_id("esc"),
+        "payment_id": payment_id,
+        "booking_id": body.booking_id,
+        "artisan_id": booking["artisan_id"],
+        "amount_cents": amount,
+        "state": "pending",
+        "created_at": payments.now_utc_iso(),
+    })
+    await payments.audit(db, user["user_id"], "payment.intent_created", payment_id, {"amount_cents": amount, "booking_id": body.booking_id})
+    return {"payment_id": payment_id, "client_secret": intent.get("client_secret"), "amount_cents": amount, "mock_mode": payments.MOCK_MODE}
+
+@api_router.post("/payments/{payment_id}/mock-confirm")
+async def mock_confirm_payment(payment_id: str, user=Depends(get_current_user)):
+    """DEV ONLY — simulates a successful Stripe webhook when running in MOCK_MODE.
+    In production, Stripe hits /stripe/webhooks and moves the state forward."""
+    if not payments.MOCK_MODE:
+        raise HTTPException(status_code=400, detail="Endpoint disponible uniquement en MOCK_MODE")
+    p = await db.payments.find_one({"payment_id": payment_id}, {"_id": 0})
+    if not p:
+        raise HTTPException(status_code=404, detail="Paiement introuvable")
+    await db.payments.update_one({"payment_id": payment_id}, {"$set": {"status": "succeeded", "confirmed_at": payments.now_utc_iso()}})
+    await db.escrows.update_one({"payment_id": payment_id}, {"$set": {"state": "held", "held_at": payments.now_utc_iso()}})
+    await payments.audit(db, user["user_id"], "payment.succeeded", payment_id, {"mock": True})
+    return {"ok": True, "status": "succeeded"}
+
+# ---------- Escrow ----------
+@api_router.get("/escrows/mine")
+async def my_escrows(user=Depends(get_current_user)):
+    if user.get("role") == "artisan":
+        prof = await db.artisan_profiles.find_one({"user_id": user["user_id"]}, {"_id": 0})
+        if not prof:
+            return []
+        rows = await db.escrows.find({"artisan_id": prof["artisan_id"]}, {"_id": 0}).sort("created_at", -1).to_list(500)
+    else:
+        rows = await db.escrows.find({}, {"_id": 0}).sort("created_at", -1).to_list(500)
+        # filter to those on this client's bookings
+        booking_ids = [r["booking_id"] for r in rows]
+        clients = {b["booking_id"]: b["client_id"] async for b in db.bookings.find({"booking_id": {"$in": booking_ids}}, {"_id": 0, "booking_id": 1, "client_id": 1})}
+        rows = [r for r in rows if clients.get(r["booking_id"]) == user["user_id"]]
+    return rows
+
+@api_router.post("/escrow/{booking_id}/release")
+async def escrow_release(booking_id: str, user=Depends(get_current_user)):
+    booking = await db.bookings.find_one({"booking_id": booking_id, "client_id": user["user_id"]}, {"_id": 0})
+    if not booking:
+        raise HTTPException(status_code=404, detail="Réservation introuvable")
+    escrow = await db.escrows.find_one({"booking_id": booking_id}, {"_id": 0})
+    if not escrow:
+        raise HTTPException(status_code=404, detail="Escrow introuvable")
+    if escrow["state"] != "held":
+        raise HTTPException(status_code=400, detail=f"Escrow en état '{escrow['state']}', ne peut pas être libéré")
+
+    artisan = await db.artisan_profiles.find_one({"artisan_id": booking["artisan_id"]}, {"_id": 0}) or {}
+    connected = await db.stripe_accounts.find_one({"artisan_id": booking["artisan_id"]}, {"_id": 0})
+    if not connected:
+        raise HTTPException(status_code=400, detail="L'artisan n'a pas encore configuré Stripe Connect")
+
+    bps = await payments.resolve_commission_bps(db, artisan)
+    fee = payments.commission_amount(escrow["amount_cents"], bps)
+    net = escrow["amount_cents"] - fee
+
+    transfer = payments.create_transfer(
+        amount_cents=net,
+        currency=escrow.get("currency", "eur"),
+        destination=connected["stripe_account_id"],
+        transfer_group=booking_id,
+        metadata={"booking_id": booking_id, "artisan_id": booking["artisan_id"]},
+    )
+    await db.transfers.insert_one({
+        "transfer_id": new_id("tr"),
+        "stripe_transfer_id": transfer["id"],
+        "booking_id": booking_id,
+        "escrow_id": escrow["escrow_id"],
+        "artisan_id": booking["artisan_id"],
+        "gross_cents": escrow["amount_cents"],
+        "commission_bps": bps,
+        "commission_cents": fee,
+        "net_cents": net,
+        "created_at": payments.now_utc_iso(),
+    })
+    await db.escrows.update_one({"escrow_id": escrow["escrow_id"]}, {"$set": {
+        "state": "released",
+        "released_at": payments.now_utc_iso(),
+        "commission_bps": bps,
+        "commission_cents": fee,
+        "net_cents": net,
+        "stripe_transfer_id": transfer["id"],
+    }})
+    await payments.audit(db, user["user_id"], "escrow.released", escrow["escrow_id"], {
+        "gross_cents": escrow["amount_cents"], "commission_cents": fee, "net_cents": net,
+    })
+    return {"ok": True, "gross_cents": escrow["amount_cents"], "commission_cents": fee, "net_cents": net, "transfer_id": transfer["id"]}
+
+@api_router.post("/escrow/{booking_id}/refund")
+async def escrow_refund(booking_id: str, body: RefundInput, user=Depends(get_current_user)):
+    booking = await db.bookings.find_one({"booking_id": booking_id, "client_id": user["user_id"]}, {"_id": 0})
+    if not booking:
+        raise HTTPException(status_code=404, detail="Réservation introuvable")
+    escrow = await db.escrows.find_one({"booking_id": booking_id}, {"_id": 0})
+    payment = await db.payments.find_one({"booking_id": booking_id, "status": "succeeded"}, {"_id": 0})
+    if not escrow or not payment:
+        raise HTTPException(status_code=404, detail="Paiement introuvable")
+    if escrow["state"] not in ("held", "frozen"):
+        raise HTTPException(status_code=400, detail=f"Escrow en état '{escrow['state']}', non remboursable")
+    refund_amount = body.amount_cents or escrow["amount_cents"]
+    refund = payments.refund_payment(payment["stripe_payment_intent_id"], refund_amount, body.reason)
+    await db.refunds.insert_one({
+        "refund_id": new_id("ref"),
+        "stripe_refund_id": refund["id"],
+        "payment_id": payment["payment_id"],
+        "booking_id": booking_id,
+        "amount_cents": refund_amount,
+        "reason": body.reason,
+        "created_at": payments.now_utc_iso(),
+    })
+    await db.escrows.update_one({"escrow_id": escrow["escrow_id"]}, {"$set": {"state": "refunded", "refunded_at": payments.now_utc_iso()}})
+    await payments.audit(db, user["user_id"], "escrow.refunded", escrow["escrow_id"], {"amount_cents": refund_amount, "reason": body.reason})
+    return {"ok": True, "refund_id": refund["id"], "amount_cents": refund_amount}
+
+@api_router.post("/escrow/freeze")
+async def escrow_freeze(body: DisputeFreezeInput, user=Depends(get_current_user)):
+    """Freeze an escrow when a dispute is opened. Only admins or the funds owner can freeze.
+    The Trust Engine's POST /disputes should also call this internally for severe cases."""
+    escrow = await db.escrows.find_one({"booking_id": body.booking_id}, {"_id": 0})
+    if not escrow:
+        raise HTTPException(status_code=404, detail="Escrow introuvable")
+    booking = await db.bookings.find_one({"booking_id": body.booking_id}, {"_id": 0})
+    is_admin = user.get("email", "").lower() in ADMIN_EMAILS
+    is_owner = booking and booking.get("client_id") == user["user_id"]
+    if not (is_admin or is_owner):
+        raise HTTPException(status_code=403, detail="Non autorisé")
+    if escrow["state"] != "held":
+        raise HTTPException(status_code=400, detail="Seuls les escrows 'held' peuvent être gelés")
+    await db.escrows.update_one({"escrow_id": escrow["escrow_id"]}, {"$set": {
+        "state": "frozen", "frozen_at": payments.now_utc_iso(), "freeze_reason": body.reason,
+    }})
+    await payments.audit(db, user["user_id"], "escrow.frozen", escrow["escrow_id"], {"reason": body.reason})
+    return {"ok": True, "state": "frozen"}
+
+# ---------- Subscriptions ----------
+@api_router.get("/subscriptions/plans")
+async def subscription_plans():
+    """Public catalog — safe to expose."""
+    return [{k: v for k, v in p.items() if k != "stripe_price_id"} for p in payments.PLANS]
+
+@api_router.post("/subscriptions/subscribe")
+async def subscribe_plan(body: SubscribePlanInput, user=Depends(get_current_user)):
+    if user.get("role") != "artisan":
+        raise HTTPException(status_code=403, detail="Réservé aux artisans")
+    plan = next((p for p in payments.PLANS if p["key"] == body.plan_key), None)
+    if not plan:
+        raise HTTPException(status_code=400, detail="Plan inconnu")
+    if plan["price_cents"] == 0:
+        # Starter = free tier, no Stripe subscription needed.
+        await db.subscriptions_records.update_one(
+            {"user_id": user["user_id"]},
+            {"$set": {"plan_key": "starter", "status": "active", "updated_at": payments.now_utc_iso()}},
+            upsert=True,
+        )
+        await payments.audit(db, user["user_id"], "subscription.free_activated", "starter")
+        return {"plan_key": "starter", "status": "active", "mock_mode": payments.MOCK_MODE}
+
+    # Ensure Stripe customer exists
+    customer = payments.get_or_create_customer(user["email"], user["name"], {"user_id": user["user_id"]})
+    sub = payments.create_subscription(customer["id"], plan["stripe_price_id"] or "price_placeholder_" + body.plan_key, {"user_id": user["user_id"], "plan_key": body.plan_key})
+    await db.subscriptions_records.update_one(
+        {"user_id": user["user_id"]},
+        {"$set": {
+            "user_id": user["user_id"],
+            "plan_key": body.plan_key,
+            "stripe_customer_id": customer["id"],
+            "stripe_subscription_id": sub["id"],
+            "status": sub["status"],
+            "current_period_end": sub.get("current_period_end"),
+            "updated_at": payments.now_utc_iso(),
+        }},
+        upsert=True,
+    )
+    await payments.audit(db, user["user_id"], "subscription.subscribed", sub["id"], {"plan_key": body.plan_key})
+    return {"plan_key": body.plan_key, "status": sub["status"], "subscription_id": sub["id"], "mock_mode": payments.MOCK_MODE}
+
+@api_router.post("/subscriptions/cancel")
+async def cancel_current_subscription(user=Depends(get_current_user)):
+    row = await db.subscriptions_records.find_one({"user_id": user["user_id"]}, {"_id": 0})
+    if not row or not row.get("stripe_subscription_id"):
+        raise HTTPException(status_code=404, detail="Aucun abonnement actif")
+    res = payments.cancel_subscription(row["stripe_subscription_id"], at_period_end=True)
+    await db.subscriptions_records.update_one({"user_id": user["user_id"]}, {"$set": {
+        "cancel_at_period_end": True,
+        "canceled_at": payments.now_utc_iso(),
+        "status": res.get("status", row["status"]),
+    }})
+    await payments.audit(db, user["user_id"], "subscription.canceled", row["stripe_subscription_id"])
+    return {"ok": True, "cancel_at_period_end": True}
+
+@api_router.get("/subscriptions/mine")
+async def my_subscription(user=Depends(get_current_user)):
+    row = await db.subscriptions_records.find_one({"user_id": user["user_id"]}, {"_id": 0})
+    if not row:
+        return {"plan_key": "starter", "status": "active"}
+    return row
+
+# ---------- Professional finance dashboard ----------
+@api_router.get("/artisans/me/finance")
+async def artisan_finance(user=Depends(get_current_user)):
+    if user.get("role") != "artisan":
+        raise HTTPException(status_code=403, detail="Réservé aux artisans")
+    profile = await db.artisan_profiles.find_one({"user_id": user["user_id"]}, {"_id": 0})
+    if not profile:
+        raise HTTPException(status_code=404, detail="Profil introuvable")
+    aid = profile["artisan_id"]
+    transfers = await db.transfers.find({"artisan_id": aid}, {"_id": 0}).sort("created_at", -1).to_list(500)
+    revenue = sum(t.get("net_cents", 0) for t in transfers)
+    commissions = sum(t.get("commission_cents", 0) for t in transfers)
+    gross = sum(t.get("gross_cents", 0) for t in transfers)
+    pending = await db.escrows.aggregate([
+        {"$match": {"artisan_id": aid, "state": "held"}},
+        {"$group": {"_id": None, "total": {"$sum": "$amount_cents"}, "count": {"$sum": 1}}},
+    ]).to_list(1)
+    pending_total = pending[0]["total"] if pending else 0
+    pending_count = pending[0]["count"] if pending else 0
+
+    # Monthly evolution (last 6 months, YYYY-MM buckets).
+    monthly: Dict[str, int] = {}
+    for t in transfers:
+        key = (t.get("created_at") or "")[:7]
+        monthly[key] = monthly.get(key, 0) + t.get("net_cents", 0)
+    evolution = [{"month": k, "amount_cents": v} for k, v in sorted(monthly.items())][-6:]
+
+    avg = int(revenue / len(transfers)) if transfers else 0
+    return {
+        "revenue_cents": revenue,
+        "gross_cents": gross,
+        "commissions_cents": commissions,
+        "pending_cents": pending_total,
+        "pending_count": pending_count,
+        "transfers_count": len(transfers),
+        "average_net_cents": avg,
+        "monthly_evolution": evolution,
+        "recent_transfers": transfers[:10],
+    }
+
+# ---------- Admin: commissions ----------
+@api_router.get("/admin/finance/overview")
+async def admin_finance_overview(user=Depends(require_admin)):
+    total_gross = await db.payments.aggregate([
+        {"$match": {"status": "succeeded"}},
+        {"$group": {"_id": None, "total": {"$sum": "$amount_cents"}, "count": {"$sum": 1}}},
+    ]).to_list(1)
+    total_commissions = await db.transfers.aggregate([
+        {"$group": {"_id": None, "total": {"$sum": "$commission_cents"}, "count": {"$sum": 1}}},
+    ]).to_list(1)
+    total_refunds = await db.refunds.aggregate([
+        {"$group": {"_id": None, "total": {"$sum": "$amount_cents"}, "count": {"$sum": 1}}},
+    ]).to_list(1)
+    subs = await db.subscriptions_records.aggregate([
+        {"$match": {"status": "active"}}, {"$group": {"_id": "$plan_key", "count": {"$sum": 1}}},
+    ]).to_list(20)
+    plan_price = {p["key"]: p["price_cents"] for p in payments.PLANS}
+    mrr = sum(row["count"] * plan_price.get(row["_id"], 0) for row in subs)
+
+    pending_payouts = await db.escrows.aggregate([
+        {"$match": {"state": "held"}}, {"$group": {"_id": None, "total": {"$sum": "$amount_cents"}, "count": {"$sum": 1}}},
+    ]).to_list(1)
+    failed_payments = await db.payments.count_documents({"status": "payment_failed"})
+    top_trades = await db.transfers.aggregate([
+        {"$lookup": {"from": "artisan_profiles", "localField": "artisan_id", "foreignField": "artisan_id", "as": "a"}},
+        {"$unwind": "$a"},
+        {"$group": {"_id": "$a.trade", "revenue": {"$sum": "$gross_cents"}, "count": {"$sum": 1}}},
+        {"$sort": {"revenue": -1}},
+        {"$limit": 5},
+    ]).to_list(5)
+    return {
+        "gross_cents": total_gross[0]["total"] if total_gross else 0,
+        "payments_count": total_gross[0]["count"] if total_gross else 0,
+        "commission_cents": total_commissions[0]["total"] if total_commissions else 0,
+        "transfers_count": total_commissions[0]["count"] if total_commissions else 0,
+        "refunds_cents": total_refunds[0]["total"] if total_refunds else 0,
+        "refunds_count": total_refunds[0]["count"] if total_refunds else 0,
+        "active_subscriptions": [{"plan": r["_id"], "count": r["count"]} for r in subs],
+        "mrr_cents": mrr,
+        "pending_payouts_cents": pending_payouts[0]["total"] if pending_payouts else 0,
+        "pending_payouts_count": pending_payouts[0]["count"] if pending_payouts else 0,
+        "failed_payments": failed_payments,
+        "top_trades": [{"trade": r["_id"], "revenue_cents": r["revenue"], "count": r["count"]} for r in top_trades],
+        "mock_mode": payments.MOCK_MODE,
+    }
+
+@api_router.get("/admin/commissions")
+async def get_commission_config(user=Depends(require_admin)):
+    cfg = await db.platform_config.find_one({"key": "commission"}, {"_id": 0}) or {}
+    rules = await db.commission_rules.find({}, {"_id": 0}).sort("created_at", -1).to_list(500)
+    return {
+        "global_bps": cfg.get("global_bps", payments.DEFAULT_COMMISSION_BPS),
+        "min_cents": cfg.get("min_cents", payments.DEFAULT_COMMISSION_MIN_CENTS),
+        "rules": rules,
+    }
+
+@api_router.put("/admin/commissions")
+async def set_commission_config(body: CommissionConfigInput, user=Depends(require_admin)):
+    await db.platform_config.update_one(
+        {"key": "commission"},
+        {"$set": {"key": "commission", "global_bps": int(body.global_bps), "min_cents": int(body.min_cents), "updated_by": user["user_id"], "updated_at": payments.now_utc_iso()}},
+        upsert=True,
+    )
+    await payments.audit(db, user["user_id"], "commission.global_updated", "commission", {"global_bps": body.global_bps, "min_cents": body.min_cents})
+    return {"ok": True, "global_bps": body.global_bps, "min_cents": body.min_cents}
+
+@api_router.post("/admin/commission-rules")
+async def create_commission_rule(body: CommissionRuleInput, user=Depends(require_admin)):
+    if body.kind not in ("trade", "promo", "exemption"):
+        raise HTTPException(status_code=400, detail="kind invalide")
+    doc = {
+        "rule_id": new_id("crule"),
+        "kind": body.kind,
+        "bps": int(body.bps),
+        "trade": body.trade,
+        "artisan_id": body.artisan_id,
+        "start_at": body.start_at,
+        "end_at": body.end_at,
+        "label": body.label or "",
+        "active": True,
+        "created_by": user["user_id"],
+        "created_at": payments.now_utc_iso(),
+    }
+    await db.commission_rules.insert_one(dict(doc))
+    await payments.audit(db, user["user_id"], "commission.rule_created", doc["rule_id"], {"kind": body.kind, "bps": body.bps})
+    return doc
+
+@api_router.delete("/admin/commission-rules/{rule_id}")
+async def delete_commission_rule(rule_id: str, user=Depends(require_admin)):
+    await db.commission_rules.update_one({"rule_id": rule_id}, {"$set": {"active": False, "deactivated_at": payments.now_utc_iso()}})
+    await payments.audit(db, user["user_id"], "commission.rule_deactivated", rule_id)
+    return {"ok": True}
+
+@api_router.get("/admin/audit-logs")
+async def admin_audit_logs(limit: int = 100, user=Depends(require_admin)):
+    limit = max(1, min(500, limit))
+    rows = await db.audit_logs.find({}, {"_id": 0}).sort("created_at", -1).to_list(limit)
+    return rows
+
+# ---------- Future-ready stubs — advertise, don't implement ----------
+@api_router.get("/payments/future-features")
+async def future_features():
+    """Advertise upcoming payment products so the app can render 'coming soon' surfaces."""
+    return [
+        {"key": "installments", "title": "Paiement en plusieurs fois", "status": "coming_soon"},
+        {"key": "bnpl",         "title": "Buy Now Pay Later", "status": "coming_soon"},
+        {"key": "maintenance",  "title": "Abonnements entretien récurrent", "status": "coming_soon"},
+        {"key": "insurance",    "title": "Assurance travaux intégrée", "status": "coming_soon"},
+        {"key": "financing",    "title": "Financement marketplace", "status": "coming_soon"},
+    ]
+
+# ---------- Stripe webhooks — production entrypoint ----------
+from fastapi import Request
+
+@app.post("/api/stripe/webhooks")
+async def stripe_webhooks(request: Request):
+    raw = await request.body()
+    sig = request.headers.get("stripe-signature", "")
+    event = payments.verify_webhook(raw, sig)
+    if not event:
+        raise HTTPException(status_code=400, detail="Signature invalide")
+    event_id = event.get("id") or payments._mock_id("evt")
+    # Idempotency guard
+    seen = await db.stripe_events.find_one({"event_id": event_id})
+    if seen:
+        return {"received": True, "duplicate": True}
+    await db.stripe_events.insert_one({"event_id": event_id, "type": event.get("type"), "created_at": payments.now_utc_iso()})
+
+    et = event.get("type", "")
+    data = (event.get("data") or {}).get("object", {})
+    if et == "payment_intent.succeeded":
+        await db.payments.update_one({"stripe_payment_intent_id": data.get("id")}, {"$set": {"status": "succeeded", "confirmed_at": payments.now_utc_iso()}})
+        await db.escrows.update_one({"payment_id": {"$in": [p["payment_id"] async for p in db.payments.find({"stripe_payment_intent_id": data.get("id")}, {"_id": 0, "payment_id": 1})]}},
+                                     {"$set": {"state": "held", "held_at": payments.now_utc_iso()}})
+    elif et == "payment_intent.payment_failed":
+        await db.payments.update_one({"stripe_payment_intent_id": data.get("id")}, {"$set": {"status": "payment_failed", "failed_at": payments.now_utc_iso()}})
+    elif et == "charge.refunded":
+        await payments.audit(db, None, "stripe.charge_refunded", data.get("id", ""), {})
+    elif et in ("customer.subscription.updated", "customer.subscription.deleted"):
+        await db.subscriptions_records.update_one({"stripe_subscription_id": data.get("id")}, {"$set": {"status": data.get("status"), "updated_at": payments.now_utc_iso()}})
+    elif et == "account.updated":
+        await db.stripe_accounts.update_one({"stripe_account_id": data.get("id")}, {"$set": {
+            "charges_enabled": data.get("charges_enabled", False),
+            "payouts_enabled": data.get("payouts_enabled", False),
+            "details_submitted": data.get("details_submitted", False),
+            "updated_at": payments.now_utc_iso(),
+        }})
+    return {"received": True, "type": et}
 
 
 # ============================================================
