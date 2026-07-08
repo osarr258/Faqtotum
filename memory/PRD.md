@@ -187,3 +187,13 @@ Application de mise en relation à la Uber/Airbnb connectant les clients (partic
 - MFA demo code : 000000 (architecture prête pour pyotp/TOTP réel).
 - Tests : 23 tests security (13+10) + non-régression 383/383 verts.
 
+
+## Sprint 9 — Cinematic Welcome Screen (LIVRÉ)
+- Nouvel écran `/welcome` = première expérience utilisateur (avant `/onboarding`).
+- Design "Revolut of home services" : matte black + champagne gold + off-white.
+- 3 hero images cinématiques originales générées via Gemini Nano Banana (`assets/images/auxora_hero_[1-3].png`).
+- Animation full-screen : Ken Burns pan/zoom + cross-fade loop 21s seamless.
+- Overlay particules dorées (22), gradient vignette 4-stops.
+- Séquence texte : atmosphère (0-2s) → logo AUXORA (2s) → titre (4s) → sous-titre (6s) → boutons (8s, fixes).
+- 3 CTA : "Créer un compte" (gold), "Se connecter" (glass), "Découvrir Auxora →" (subtile lien vers /onboarding).
+- Logout/RGPD delete redirigent vers `/welcome`.

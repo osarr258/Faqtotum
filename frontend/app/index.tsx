@@ -11,7 +11,7 @@ export default function Index() {
   useEffect(() => {
     if (loading) return;
     if (!user) {
-      router.replace("/onboarding");
+      router.replace("/welcome");
     } else if (user.role === "artisan") {
       router.replace("/(artisan)");
     } else {

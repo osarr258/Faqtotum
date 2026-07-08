@@ -50,7 +50,7 @@ export default function ArtisanProfile() {
     }
   };
 
-  const doLogout = async () => { await logout(); router.replace("/onboarding"); };
+  const doLogout = async () => { await logout(); router.replace("/welcome"); };
 
   return (
     <KeyboardAvoidingView style={{ flex: 1, backgroundColor: colors.surface }} behavior={Platform.OS === "ios" ? "padding" : undefined}>

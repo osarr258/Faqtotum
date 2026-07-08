@@ -57,7 +57,7 @@ export default function PrivacyScreen() {
               await api("/security/gdpr/account", { method: "DELETE" });
               Alert.alert("Compte supprimé", "Vos données ont été anonymisées.");
               await logout();
-              router.replace("/onboarding");
+              router.replace("/welcome");
             } catch (e: any) { Alert.alert("Erreur", e.message); }
           }
         },

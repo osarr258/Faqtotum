@@ -13,7 +13,7 @@ export default function ClientProfile() {
 
   const doLogout = async () => {
     await logout();
-    router.replace("/onboarding");
+    router.replace("/welcome");
   };
 
   const rows: { icon: any; label: string; to?: string }[] = [
