@@ -1,0 +1,43 @@
+{
+  "summary": "Sprint 8 (Security, Privacy, Authentication & Platform Integrity) backend validation. Ran the new /api/security/* suite against the PUBLIC preview URL (https://reviens-app.preview.emergentagent.com): 13/13 tests in test_security_sprint.py PASS. Added test_security_sprint_extra.py with 10 additional targeted tests (specific session revoke, overview shape, audit hides hash/prev_hash, admin-only /audit/all forbidden for client, GDPR consents defaults, GDPR account soft-delete anonymization, MFA status shape, 9-role catalog, password change success + login with new password, distributed brute-force by IP): 10/10 PASS. Non-regression: full backend suite 383/383 PASS on public URL. No new mocked APIs introduced (MFA verify uses documented demo code 000000, Stripe was already mocked).",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_security_sprint.py",
+    "/app/backend/tests/test_security_sprint_extra.py (new)",
+    "/app/test_reports/pytest/security_sprint.xml",
+    "/app/test_reports/pytest/security_sprint_extra.xml",
+    "/app/test_reports/pytest/full_regression_sprint8.xml"
+  ],
+  "action_items": [
+    "None — Sprint 8 backend is production-ready per the acceptance criteria.",
+    "Nice-to-have (non-blocking): the distributed brute-force IP threshold (30 distinct emails/15 min) can lock the *test IP itself* when running the extra distributed brute-force test back-to-back with other suites. This is by design, but the testing agent had to clear login_attempts once between sprints. Consider allow-listing the preview egress IP or exposing a small admin reset endpoint for CI hygiene.",
+    "Documentation is accurate that MFA /verify uses demo code 000000 — user has explicitly approved this as an architecture stub (NOT a real TOTP)."
+  ],
+  "critical_code_review_comments": [
+    "server.py is now 3838 lines — well past the 700-line file-size guideline. Sprint 8's ~200 security-related routes at the end are a good candidate to extract into backend/routers/security.py (services/security.py is already correctly separated).",
+    "Both role-based (require_roles) and email-list (ADMIN_EMAILS) admin checks coexist. Sprint 8 correctly uses require_roles for /security/audit/verify, /audit/all, /admin/sessions — verified 403 for the ADMIN_EMAILS-listed client user because it does not have role='admin' in DB. Recommend converging on the role model long-term to avoid confusion.",
+    "Audit chain hides hash/prev_hash from end user in /security/audit — verified. Good defense-in-depth.",
+    "check_login_rate_limit bypasses local IPs (127.*, localhost, 'unknown') for distributed detection — appropriate for dev but confirm production ingress forwards real client IP via X-Forwarded-For (looks OK based on the request handling in server.py)."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_security_sprint_extra.py (new — 10 additional tests)"
+  ],
+  "success_rate": {
+    "backend": "100% (13/13 sprint tests + 10/10 extra tests + 383/383 full regression = 406/406)",
+    "frontend": "not tested (out of scope per request)"
+  },
+  "seed_data_creation": "Each extra test registers its own ephemeral user with a uuid-prefixed email (revoke_*, ovr_*, aud_*, csn_*, del_*, mfa_*, pwd_*, bf_*, nx_*) under auxora-test.fr. No shared/production data mutated. login_attempts cleared once (43 rows) after the distributed brute-force test that intentionally exceeds the 30-distinct-emails/IP threshold, then cleaned up again at the end.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Sprint 8 security backend is fully green on public URL. IMPORTANT: test_security_sprint_extra.py::test_distributed_brute_force_by_ip and the original test_brute_force_lockout both push login_attempts near/over the IP-level 30-distinct-emails/15-min threshold. If you run large auth suites right after these, you may see 429 'Trop de tentatives suspectes depuis votre réseau' on subsequent logins. Fix: `mongosh --quiet --eval 'db=db.getSiblingDB(\"auxora\"); db.login_attempts.deleteMany({success:false});'` — this is what unblocked the regression run.",
+  "rca_of_issue": "N/A — no bugs found. Initial run of the full suite failed with 172 errors due to the distributed brute-force test locking the test-runner IP for 15 minutes. Root cause: the rate-limit design is correct; the test-order artifact only affects self-testing. After clearing login_attempts, the full 383-test regression passed cleanly."
+}
