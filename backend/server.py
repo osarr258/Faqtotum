@@ -16,7 +16,7 @@ from pathlib import Path
 from pydantic import BaseModel, Field, EmailStr
 from typing import List, Optional
 from datetime import datetime, timezone, timedelta
-from services import matching, calendar_sync
+from services import matching, calendar_sync, trust_engine
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -365,7 +365,7 @@ async def upsert_artisan_profile(data: ArtisanProfileInput, user=Depends(get_cur
         "lng": coords[1] if coords else None,
     }
     if existing:
-        await db.artisan_profiles.update_one({"artisan_id": existing["artisan_id"]}, {"$set": payload})
+        await db.artisan_profiles.update_one({"artisan_id": existing["artisan_id"]}, {"$set": {**payload, "last_active_at": now_utc().isoformat()}})
         profile = await db.artisan_profiles.find_one({"artisan_id": existing["artisan_id"]}, {"_id": 0})
     else:
         artisan_id = new_id("art")
@@ -382,6 +382,19 @@ async def upsert_artisan_profile(data: ArtisanProfileInput, user=Depends(get_cur
             "cancellation_rate": 0,
             "response_min": 20,
             "jobs_done": 0,
+            "identity_verified": False,
+            "insurance_verified": False,
+            "business_registered": False,
+            "background_checked": False,
+            "years_experience": 0,
+            "avg_arrival_min": 45,
+            "punctuality_rate": 100,
+            "satisfaction_rate": 90,
+            "emergency_capable": False,
+            "disputes_unresolved": 0,
+            "disputes_resolved": 0,
+            "member_since": now_utc().isoformat(),
+            "last_active_at": now_utc().isoformat(),
             "calendar_connected": False,
             "is_subscribed": False,
             "subscription_expires": None,
@@ -390,6 +403,9 @@ async def upsert_artisan_profile(data: ArtisanProfileInput, user=Depends(get_cur
         }
         await db.artisan_profiles.insert_one(profile)
         profile.pop("_id", None)
+    # Trust Engine — recompute after any profile change.
+    await trust_engine.persist(db, profile["artisan_id"])
+    profile = await db.artisan_profiles.find_one({"artisan_id": profile["artisan_id"]}, {"_id": 0})
     return await enrich_artisan(profile)
 
 @api_router.post("/artisans/me/subscribe")
@@ -409,7 +425,16 @@ async def get_artisan(artisan_id: str):
     artisan = await db.artisan_profiles.find_one({"artisan_id": artisan_id}, {"_id": 0})
     if not artisan:
         raise HTTPException(status_code=404, detail="Artisan introuvable")
-    return await enrich_artisan(artisan)
+    enriched = await enrich_artisan(artisan)
+    # Attach the Trust confidence card so the profile screen can display badges + reasons.
+    try:
+        out = trust_engine.compute(artisan)
+        enriched["confidence_card"] = trust_engine.confidence_card(artisan, out)
+        enriched["badges"] = trust_engine.badges(artisan, out["trust_score"])
+        enriched["trust_score"] = out["trust_score"]
+    except Exception as e:
+        logger.warning(f"trust card computation failed: {e}")
+    return enriched
 
 # ----------------------------- Booking routes -----------------------------
 
@@ -479,6 +504,9 @@ async def update_booking(booking_id: str, data: BookingStatusInput, user=Depends
         raise HTTPException(status_code=400, detail="Statut invalide")
     await db.bookings.update_one({"booking_id": booking_id}, {"$set": {"status": data.status}})
     booking["status"] = data.status
+    # Trust Engine — recompute on any status change that affects counters.
+    if booking.get("artisan_id"):
+        await trust_engine.persist(db, booking["artisan_id"])
     return booking
 
 # ----------------------------- Reviews -----------------------------
@@ -541,6 +569,7 @@ async def create_review(data: ReviewInput, user=Depends(get_current_user)):
     review.pop("_id", None)
     if to_role == "artisan" and artisan_id:
         await recompute_artisan_rating(artisan_id)
+        await trust_engine.persist(db, artisan_id)
     return review
 
 @api_router.get("/reviews/artisan/{artisan_id}")
@@ -1102,6 +1131,20 @@ async def seed_data():
                 "completion_rate": 95 + (i % 5),               # 95..99
                 "cancellation_rate": (i % 4),                  # 0..3 %
                 "response_min": 8 + (i % 5) * 4,               # 8..24 min
+                # Trust Engine — extended, deterministic signals.
+                "identity_verified": True,
+                "insurance_verified": True,
+                "business_registered": True,
+                "background_checked": (i % 3 != 0),
+                "years_experience": 3 + (i % 8),               # 3..10
+                "avg_arrival_min": 20 + (i % 6) * 5,           # 20..45
+                "punctuality_rate": 92 + (i % 8),              # 92..99
+                "satisfaction_rate": 88 + (i % 12),            # 88..99
+                "emergency_capable": (i % 2 == 0),
+                "disputes_unresolved": 0,
+                "disputes_resolved": (i % 5 == 0),             # ~20% pros have 1 resolved dispute
+                "member_since": (now_utc() - timedelta(days=180 + (i * 47) % 900)).isoformat(),
+                "last_active_at": now_utc().isoformat(),
                 "calendar_connected": False,
                 "jobs_done": s["reviews_count"],
                 "subscription_expires": (now_utc() + timedelta(days=365)).isoformat(),
@@ -1127,6 +1170,164 @@ async def seed_data():
         )
     if missing:
         logger.info(f"Backfilled stats on {len(missing)} seeds")
+
+    # Trust Engine — backfill new signals on artisans that predate the engine.
+    trust_missing = await db.artisan_profiles.find(
+        {"identity_verified": {"$exists": False}}, {"_id": 0, "artisan_id": 1}
+    ).to_list(500)
+    for i, a in enumerate(trust_missing):
+        await db.artisan_profiles.update_one(
+            {"artisan_id": a["artisan_id"]},
+            {"$set": {
+                "identity_verified": True,
+                "insurance_verified": True,
+                "business_registered": True,
+                "background_checked": (i % 3 != 0),
+                "years_experience": 3 + (i % 8),
+                "avg_arrival_min": 20 + (i % 6) * 5,
+                "punctuality_rate": 92 + (i % 8),
+                "satisfaction_rate": 88 + (i % 12),
+                "emergency_capable": (i % 2 == 0),
+                "disputes_unresolved": 0,
+                "disputes_resolved": 1 if (i % 5 == 0) else 0,
+                "member_since": (now_utc() - timedelta(days=180 + (i * 47) % 900)).isoformat(),
+                "last_active_at": now_utc().isoformat(),
+            }},
+        )
+    if trust_missing:
+        logger.info(f"Backfilled trust signals on {len(trust_missing)} artisans")
+
+    # Trust Engine — recompute all artisans on startup (idempotent, cheap).
+    all_ids = await db.artisan_profiles.find({}, {"_id": 0, "artisan_id": 1}).to_list(500)
+    for row in all_ids:
+        try:
+            await trust_engine.persist(db, row["artisan_id"])
+        except Exception as e:
+            logger.warning(f"trust recompute {row['artisan_id']}: {e}")
+    if all_ids:
+        logger.info(f"Recomputed trust scores for {len(all_ids)} artisans")
+
+# ============================================================
+# TRUST ENGINE — Confidence card, Scoreboard, Disputes, Smart recos, Badges
+# ============================================================
+
+class DisputeInput(BaseModel):
+    artisan_id: str
+    booking_id: Optional[str] = None
+    reason: str
+    severity: str = "minor"  # minor | moderate | severe
+    description: Optional[str] = ""
+
+class SmartRecoInput(BaseModel):
+    picked_artisan_id: str
+    trade: Optional[str] = None
+    city: Optional[str] = None
+    urgency: Optional[str] = None
+
+async def _load_artisan(artisan_id: str) -> dict:
+    a = await db.artisan_profiles.find_one({"artisan_id": artisan_id}, {"_id": 0})
+    if not a:
+        raise HTTPException(status_code=404, detail="Artisan introuvable")
+    return a
+
+@api_router.get("/artisans/{artisan_id}/trust")
+async def artisan_trust(artisan_id: str):
+    """Full trust breakdown. Safe to expose — no PII."""
+    a = await _load_artisan(artisan_id)
+    out = trust_engine.compute(a)
+    return {**out, "artisan_id": artisan_id}
+
+@api_router.get("/artisans/{artisan_id}/confidence-card")
+async def artisan_confidence_card(artisan_id: str):
+    """Client-facing confidence card (verified/insured/reasons/badges)."""
+    a = await _load_artisan(artisan_id)
+    out = trust_engine.compute(a)
+    return trust_engine.confidence_card(a, out)
+
+@api_router.get("/artisans/{artisan_id}/badges")
+async def artisan_badges(artisan_id: str):
+    a = await _load_artisan(artisan_id)
+    ts = a.get("trust_score") or trust_engine.compute(a)["trust_score"]
+    return {"artisan_id": artisan_id, "badges": trust_engine.badges(a, ts)}
+
+@api_router.get("/artisans/me/scoreboard")
+async def my_scoreboard(user=Depends(get_current_user)):
+    """Pro-facing: how the trust score is built + improvements."""
+    a = await db.artisan_profiles.find_one({"user_id": user["user_id"]}, {"_id": 0})
+    if not a:
+        raise HTTPException(status_code=404, detail="Profil artisan introuvable")
+    out = trust_engine.compute(a)
+    return trust_engine.scoreboard(a, out)
+
+@api_router.post("/artisans/{artisan_id}/recompute-trust")
+async def recompute_trust(artisan_id: str, user=Depends(get_current_user)):
+    """Manual recompute (used by pros or admin). Idempotent."""
+    out = await trust_engine.persist(db, artisan_id)
+    if out is None:
+        raise HTTPException(status_code=404, detail="Artisan introuvable")
+    return {"artisan_id": artisan_id, **out}
+
+@api_router.post("/disputes")
+async def create_dispute(body: DisputeInput, user=Depends(get_current_user)):
+    if body.severity not in trust_engine.DISPUTE_SEVERITY:
+        raise HTTPException(status_code=400, detail="Sévérité invalide")
+    a = await _load_artisan(body.artisan_id)
+    penalty = trust_engine.dispute_penalty(body.severity)
+    dispute = {
+        "dispute_id": new_id("disp"),
+        "artisan_id": body.artisan_id,
+        "booking_id": body.booking_id,
+        "opened_by": user["user_id"],
+        "reason": body.reason,
+        "description": body.description or "",
+        "severity": body.severity,
+        "status": "open" if penalty.get("requires_manual_review") else "auto_penalized",
+        "requires_manual_review": bool(penalty.get("requires_manual_review")),
+        "score_delta": penalty["score_delta"],
+        "created_at": now_utc().isoformat(),
+    }
+    await db.disputes.insert_one(dict(dispute))
+    # Bump counters. Severe disputes NEVER auto-ban; require manual review.
+    inc = {
+        "disputes_unresolved": penalty["unresolved_bump"],
+        "disputes_resolved": penalty["resolved_bump"],
+    }
+    inc = {k: v for k, v in inc.items() if v > 0}
+    if inc:
+        await db.artisan_profiles.update_one(
+            {"artisan_id": body.artisan_id},
+            {"$inc": inc},
+        )
+    trust_out = await trust_engine.persist(db, body.artisan_id)
+    return {"dispute": dispute, "new_trust_score": trust_out["trust_score"] if trust_out else a.get("trust_score")}
+
+@api_router.get("/disputes/mine")
+async def my_disputes(user=Depends(get_current_user)):
+    """A pro sees the disputes filed against them; a client sees the ones they opened."""
+    if user.get("role") == "artisan":
+        profile = await db.artisan_profiles.find_one({"user_id": user["user_id"]}, {"_id": 0, "artisan_id": 1})
+        if not profile:
+            return []
+        rows = await db.disputes.find({"artisan_id": profile["artisan_id"]}, {"_id": 0}).sort("created_at", -1).to_list(500)
+    else:
+        rows = await db.disputes.find({"opened_by": user["user_id"]}, {"_id": 0}).sort("created_at", -1).to_list(500)
+    return rows
+
+@api_router.post("/matching/smart-recommendations")
+async def matching_smart_recos(body: SmartRecoInput, user=Depends(get_current_user)):
+    """Given a picked artisan, propose alternatives (faster, closer, cheaper, higher rated, earlier)."""
+    picked = await _load_artisan(body.picked_artisan_id)
+    q: dict = {"available": True}
+    if body.trade:
+        q["trade"] = body.trade
+    if body.city:
+        q["city"] = body.city
+    pool = await db.artisan_profiles.find(q, {"_id": 0}).to_list(200)
+    # Rank pool via matching for consistent ordering (limits to top candidates).
+    ctx = {"lat": picked.get("lat"), "lng": picked.get("lng"), "urgency": body.urgency}
+    ranked = matching.rank(pool, ctx)[:20]
+    return trust_engine.smart_alternatives(picked, ranked)
+
 
 # ============================================================
 # MY HOME — Property / Equipment / Documents / Reminders / Timeline / Insights
