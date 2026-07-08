@@ -55,7 +55,7 @@ export default function ClientHome() {
           <Avatar name={user?.name} size={44} />
         </View>
 
-        <Pressable testID="problem-button" onPress={() => router.push("/diagnose")} style={styles.problemBtn}>
+        <Pressable testID="problem-button" onPress={() => router.push({ pathname: "/concierge/[id]", params: { id: "new" } })} style={styles.problemBtn}>
           <LinearGradient colors={["#E7C988", "#C9A24B", "#A87B2E"]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={styles.problemGrad}>
             <View style={{ flex: 1 }}>
               <View style={styles.aiTag}>

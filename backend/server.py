@@ -16,7 +16,7 @@ from pathlib import Path
 from pydantic import BaseModel, Field, EmailStr
 from typing import List, Optional, Dict
 from datetime import datetime, timezone, timedelta
-from services import matching, calendar_sync, trust_engine, payments
+from services import matching, calendar_sync, trust_engine, payments, concierge
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -711,6 +711,164 @@ async def ai_transcribe(data: TranscribeInput, user=Depends(get_current_user)):
     finally:
         if path and os.path.exists(path):
             os.remove(path)
+
+# ============================================================
+# AI CONCIERGE — Multi-turn conversational diagnosis
+# ============================================================
+
+class ConciergeMessageInput(BaseModel):
+    text: Optional[str] = ""
+    photos_base64: Optional[List[str]] = None
+    voice_ext: Optional[str] = None
+    voice_base64: Optional[str] = None
+
+class ConciergeStartInput(BaseModel):
+    property_id: Optional[str] = None
+
+class ConciergeVideoInput(BaseModel):
+    filename: Optional[str] = "video.mp4"
+    size_bytes: Optional[int] = 0
+
+async def _load_conv(sid: str, user_id: str) -> dict:
+    s = await db.concierge_sessions.find_one({"session_id": sid, "user_id": user_id}, {"_id": 0})
+    if not s:
+        raise HTTPException(status_code=404, detail="Session introuvable")
+    return s
+
+@api_router.post("/concierge/start")
+async def concierge_start(body: ConciergeStartInput, user=Depends(get_current_user)):
+    sid = concierge.new_session_id()
+    initial = concierge.initial_greeting()
+    doc = {
+        "session_id": sid,
+        "user_id": user["user_id"],
+        "property_id": body.property_id,
+        "status": "active",
+        "turns": [{"role": "assistant", "text": initial["ai_message"], "ai_state": initial, "created_at": concierge.now_iso()}],
+        "detected_trade": None,
+        "urgency": "faible",
+        "confidence": 0,
+        "final_summary": None,
+        "video_pending": False,
+        "created_at": concierge.now_iso(),
+        "updated_at": concierge.now_iso(),
+    }
+    await db.concierge_sessions.insert_one(dict(doc))
+    return {"session_id": sid, "state": initial}
+
+@api_router.post("/concierge/{sid}/message")
+async def concierge_message(sid: str, body: ConciergeMessageInput, user=Depends(get_current_user)):
+    session = await _load_conv(sid, user["user_id"])
+    if session["status"] != "active":
+        raise HTTPException(status_code=400, detail="Session déjà terminée")
+
+    user_text = (body.text or "").strip()
+    if body.voice_base64:
+        try:
+            payload_v = body.voice_base64.split(",", 1)[-1]
+            raw = base64.b64decode(payload_v)
+            suffix = "." + (body.voice_ext or "m4a").lstrip(".")
+            path = None
+            with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as f:
+                f.write(raw)
+                path = f.name
+            stt = OpenAISpeechToText(api_key=EMERGENT_LLM_KEY)
+            res = await stt.transcribe(file=path, model="whisper-1", response_format="json", language="fr")
+            transcript = getattr(res, "text", None) or (res.get("text") if isinstance(res, dict) else "") or ""
+            user_text = f"{user_text} {transcript}".strip() if user_text else transcript
+            if path and os.path.exists(path):
+                os.remove(path)
+        except Exception as e:
+            logger.warning(f"concierge voice transcribe: {e}")
+
+    turn_user = {
+        "role": "user",
+        "text": user_text,
+        "attachments": {"photos_count": len(body.photos_base64 or []), "voice": bool(body.voice_base64)},
+        "created_at": concierge.now_iso(),
+    }
+    try:
+        state = await concierge.next_turn(sid, user_text, body.photos_base64)
+    except Exception as e:
+        logger.error(f"concierge next_turn failed: {e}")
+        raise HTTPException(status_code=502, detail="AURA n'a pas pu répondre, réessayez dans un instant.")
+
+    turn_ai = {"role": "assistant", "text": state["ai_message"], "ai_state": state, "created_at": concierge.now_iso()}
+    updates = {
+        "detected_trade": state.get("detected_trade") or session.get("detected_trade"),
+        "urgency": (state.get("live_diagnosis") or {}).get("urgency") or session.get("urgency"),
+        "confidence": (state.get("live_diagnosis") or {}).get("confidence") or session.get("confidence"),
+        "updated_at": concierge.now_iso(),
+    }
+    if state.get("next_action") == "finish" and state.get("summary"):
+        updates["status"] = "completed"
+        updates["final_summary"] = state["summary"]
+    await db.concierge_sessions.update_one(
+        {"session_id": sid},
+        {"$push": {"turns": {"$each": [turn_user, turn_ai]}}, "$set": updates},
+    )
+    return {"state": state, "user_text": user_text}
+
+@api_router.post("/concierge/{sid}/finish")
+async def concierge_finish(sid: str, user=Depends(get_current_user)):
+    session = await _load_conv(sid, user["user_id"])
+    if session["status"] != "active":
+        return {"state": {"summary": session.get("final_summary")}, "already_finished": True}
+    try:
+        state = await concierge.next_turn(sid, "Fais-moi le résumé final maintenant, avec la recommandation.", None, force_finish=True)
+    except Exception as e:
+        logger.error(f"concierge force finish: {e}")
+        raise HTTPException(status_code=502, detail="Résumé impossible pour le moment, réessayez.")
+    updates = {
+        "status": "completed",
+        "final_summary": state.get("summary"),
+        "detected_trade": state.get("detected_trade") or session.get("detected_trade"),
+        "updated_at": concierge.now_iso(),
+    }
+    await db.concierge_sessions.update_one(
+        {"session_id": sid},
+        {"$push": {"turns": {"role": "assistant", "text": state["ai_message"], "ai_state": state, "created_at": concierge.now_iso()}},
+         "$set": updates},
+    )
+    return {"state": state}
+
+@api_router.post("/concierge/{sid}/video")
+async def concierge_attach_video(sid: str, body: ConciergeVideoInput, user=Depends(get_current_user)):
+    await _load_conv(sid, user["user_id"])
+    note = {
+        "role": "system",
+        "text": f"Vidéo reçue ({body.filename}, {body.size_bytes} octets). L'analyse vidéo IA sera bientôt disponible.",
+        "created_at": concierge.now_iso(),
+        "video_placeholder": True,
+    }
+    await db.concierge_sessions.update_one(
+        {"session_id": sid},
+        {"$push": {"turns": note}, "$set": {"video_pending": True, "updated_at": concierge.now_iso()}},
+    )
+    return {"attached": True, "message": "L'analyse vidéo IA arrive bientôt. En attendant, décrivez ce que vous voyez ou envoyez une photo."}
+
+@api_router.get("/concierge/sessions")
+async def concierge_list_sessions(user=Depends(get_current_user)):
+    rows = await db.concierge_sessions.find(
+        {"user_id": user["user_id"]},
+        {"_id": 0, "session_id": 1, "status": 1, "detected_trade": 1, "urgency": 1, "confidence": 1,
+         "final_summary": 1, "created_at": 1, "updated_at": 1, "turns": {"$slice": -1}},
+    ).sort("updated_at", -1).to_list(100)
+    for r in rows:
+        last = r.get("turns") or []
+        r["last_message"] = last[-1]["text"] if last else ""
+        r.pop("turns", None)
+    return rows
+
+@api_router.get("/concierge/{sid}")
+async def concierge_get_session(sid: str, user=Depends(get_current_user)):
+    return await _load_conv(sid, user["user_id"])
+
+@api_router.delete("/concierge/{sid}")
+async def concierge_delete_session(sid: str, user=Depends(get_current_user)):
+    await _load_conv(sid, user["user_id"])
+    await db.concierge_sessions.delete_one({"session_id": sid, "user_id": user["user_id"]})
+    return {"ok": True}
 
 # ----------------------------- Matching & Missions -----------------------------
 
