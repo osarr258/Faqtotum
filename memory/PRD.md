@@ -178,3 +178,12 @@ Application de mise en relation à la Uber/Airbnb connectant les clients (partic
 - Attacher les interventions du diagnostic IA à un bien sélectionné.
 - Rendre 3 des 6 cartes IA fonctionnelles (santé équipement calculé, expiration garanties, inspection recommandée).
 - Notifications push sur rappels.
+
+## Sprint 8 — Security, Privacy, Authentication (LIVRÉ)
+- Service `services/security.py` : sessions device-tracking, RBAC 9 rôles, audit logs hash-chainés, rate-limiting, GDPR export/soft-delete, MFA/Biometrics stubs, security score.
+- Endpoints `/api/security/*` : overview, sessions (list/revoke), password change, audit (user+admin), gdpr (consents/export/account), mfa (prepare/verify/disable), biometrics/register, roles.
+- Frontend `app/security/*` : Security Center, Sessions, Audit, MFA, Password, Privacy (RGPD).
+- Rate limit : 5 fails/email/15min ; 30 emails distincts/IP pour brute-force distribué.
+- MFA demo code : 000000 (architecture prête pour pyotp/TOTP réel).
+- Tests : 23 tests security (13+10) + non-régression 383/383 verts.
+

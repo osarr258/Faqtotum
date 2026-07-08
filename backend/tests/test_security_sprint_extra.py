@@ -86,7 +86,7 @@ def test_audit_hides_hash_fields():
         assert "prev_hash" not in log
         assert "action" in log
     # register + login should appear
-    actions = {l["action"] for l in logs}
+    actions = {log["action"] for log in logs}
     assert "auth.login" in actions
 
 
