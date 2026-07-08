@@ -23,6 +23,25 @@ Application de mise en relation à la Uber/Airbnb connectant les clients (partic
 - Tabs client (5): Accueil, **Ma Maison**, Réservations, Messages, Profil.
 - Tabs artisan: Tableau de bord, Mon profil, Abonnement.
 
+## Implemented (2026-07 — Sprint FinTech / Stripe Connect)
+### Payments & Escrow — Marketplace trusted third party
+- **`services/payments.py`** : wrapper Stripe modulaire, mode `MOCK_MODE` auto (STRIPE_API_KEY placeholder → dev sans clés réelles ; vraie clé → prod immédiate, zéro refactor). SDK `stripe==14.4.1`.
+- **Escrow state machine** (`pending → held → released|refunded|frozen`) : plateforme est tiers de confiance. Séparation "Charges and Transfers" — le client paie la plateforme, on retient jusqu'à validation, puis Transfer vers Connected Account net de commission.
+- **Stripe Connect Express** : `POST /connect/onboard` génère lien d'onboarding, `GET /connect/status` synchronise l'état.
+- **Paiements** : `POST /payments/create-intent` (booking → PaymentIntent avec automatic_payment_methods = card + Apple Pay + Google Pay). `POST /payments/{id}/mock-confirm` en dev ; en prod, webhook `payment_intent.succeeded` fait la transition.
+- **Escrow ops** : `POST /escrow/{booking_id}/release|refund`, `POST /escrow/freeze` (owner ou admin ; gèle sur dispute).
+- **Commissions configurables** avec précédence `exemption > promo > trade > global > default 1000 bps` : `GET/PUT /admin/commissions`, `POST/DELETE /admin/commission-rules` (kind = trade | promo | exemption). Floor `min_cents` 2€.
+- **Subscriptions** : 3 plans (Starter 0€, Professional 29€/mois, Enterprise 79€/mois). `GET /subscriptions/plans` (public, safe), `POST /subscriptions/subscribe`, `POST /subscriptions/cancel` (cancel_at_period_end), `GET /subscriptions/mine`. **Le ranking ne dépend JAMAIS du plan** — matching.py 0 référence à subscription.
+- **Dashboards** :
+  - Admin : `GET /admin/finance/overview` (gross / commissions / refunds / MRR / pending_payouts / failed_payments / top_trades / active_subscriptions par plan).
+  - Pro : `GET /artisans/me/finance` (revenue / gross / commissions / pending / transfers_count / monthly_evolution 6 mois / recent_transfers 10).
+- **Webhooks** : `POST /api/stripe/webhooks` — idempotent via `stripe_events`. Handles `payment_intent.succeeded/payment_failed`, `charge.refunded`, `customer.subscription.updated/deleted`, `account.updated`.
+- **Audit logs** : chaque transition (payment, refund, escrow, commission, subscription, connect) écrit dans `audit_logs`. `GET /admin/audit-logs?limit=N`.
+- **Sécurité admin** : `require_admin` dépend de `ADMIN_EMAILS` env allow-list ou `role="admin"`. Non-admin → 403 sur `/admin/*`.
+- **Future-ready** : `GET /payments/future-features` publie 5 produits en `coming_soon` (installments, BNPL, maintenance subscriptions, insurance, marketplace financing). Architecture prête, pas implémentés.
+- **Tests** : 28/28 pytest `test_fintech_sprint.py` + 50/50 régression (My Home + Trust Engine) — GREEN.
+- **Collections nouvelles** : `stripe_accounts`, `payments`, `escrows`, `transfers`, `refunds`, `subscriptions_records`, `platform_config`, `commission_rules`, `audit_logs`, `stripe_events`.
+
 ## Implemented (2026-07 — Sprint Trust Engine)
 ### AI Trust Engine — Heart of the platform (NOUVEAU)
 - **`services/trust_engine.py`** : moteur modulaire, déterministe, ML-ready. 20 signaux pondérés (WEIGHTS somme = 100). Chaque facteur est une fonction pure séparée, `feature_vector()` produit le vecteur normalisé prêt pour un modèle ML.
