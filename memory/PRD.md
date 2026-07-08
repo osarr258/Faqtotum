@@ -23,6 +23,18 @@ Application de mise en relation à la Uber/Airbnb connectant les clients (partic
 - Tabs client (5): Accueil, **Ma Maison**, Réservations, Messages, Profil.
 - Tabs artisan: Tableau de bord, Mon profil, Abonnement.
 
+## Implemented (2026-07 — Sprint AI Concierge / AURA)
+### AURA — Conversational Home Assistant (flagship)
+- **`services/concierge.py`** : moteur conversationnel multi-tour propulsé par GPT-4o + Whisper (via `emergentintegrations.LlmChat`). Prompt système strict → JSON. `initial_greeting()` déterministe (aucun appel LLM). `_augment_safety()` = filet de sécurité keyword-based indépendant du modèle (odeur gaz, électrocuté, inondation, effondrement → alerte forcée). `_sanitize()` garantit le schéma quoi qu'il arrive.
+- **7 nouveaux endpoints** : `POST /concierge/start`, `POST /concierge/{sid}/message` (text + photos base64 + voice base64 auto-transcript Whisper), `POST /concierge/{sid}/finish` (force résumé final), `POST /concierge/{sid}/video` (placeholder architecture), `GET /concierge/sessions` (historique light), `GET /concierge/{sid}` (full), `DELETE /concierge/{sid}`.
+- **Live diagnosis** à chaque tour : `{issue, confidence 0-100, urgency (faible|moyenne|elevee|urgence), duration_min/max_hours, price_min/max_eur, risks[]}`.
+- **Questions dynamiques par métier** : plomberie/électricité/chauffage/serrurerie/toiture (adaptation via SYSTEM_PROMPT).
+- **Safety alerts** : rendues avant tout, dedup via message, jamais rétrécies (le modèle peut en ajouter).
+- **AI Summary** : à la fin, `summary = {problem, trade, trade_label, urgency, duration_hours, price_range_eur, materials, safety_advice, preparation_tips[], confidence}`. Enchaîne vers `/category/[slug]` (find pro → book → pay → track).
+- **Frontend** : `/concierge/[id]` (chat conversationnel + live diagnosis banner + safety alerts + quick reply chips + voice via `useAudioRecorder` d'`expo-audio` + photos via `expo-image-picker` + video via `expo-document-picker` + input bar sticky safe-area) et `/concierge/index` (historique avec trade icons, status chips, urgence). Home button "J'ai un problème" route désormais vers `/concierge/[id]?id=new`.
+- **Design intact** : dark + or champagne, Plus Jakarta Sans, existing UI kit. Aucune modif du système de tabs ou du design system.
+- **Tests** : 24/24 pytest `test_concierge.py` + 78/78 régression (My Home + Trust + FinTech) = **102/102 GREEN**.
+
 ## Implemented (2026-07 — Sprint FinTech / Stripe Connect)
 ### Payments & Escrow — Marketplace trusted third party
 - **`services/payments.py`** : wrapper Stripe modulaire, mode `MOCK_MODE` auto (STRIPE_API_KEY placeholder → dev sans clés réelles ; vraie clé → prod immédiate, zéro refactor). SDK `stripe==14.4.1`.
