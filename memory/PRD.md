@@ -1,55 +1,67 @@
-# ProConnect — PRD
+# ProConnect / Auxora — PRD
 
 ## Problem Statement (original, FR)
 Application de mise en relation à la Uber/Airbnb connectant les clients (particuliers/pros) aux artisans des métiers manuels (plombier, chauffagiste, climaticien, peintre, serrurier, etc.). Les clients sélectionnent et réservent un artisan ; les sociétés/artisans paient l'accès pour être référencés. Interface fluide et intuitive façon Revolut.
+
+**Pivot 2026-07** : passage du modèle marketplace pur au modèle **Home Operating System** — l'utilisateur revient chaque mois, pas seulement quand il a un problème.
 
 ## User choices
 - MVP: les deux côtés (client + artisan)
 - Auth: Email/mot de passe (JWT) + Google (Emergent)
 - Paiement abonnement: SIMULÉ pour l'instant
 - Mise en relation: le client réserve directement un créneau
-- Design: au choix de l'agent (graphite/blanc fintech, Plus Jakarta Sans)
+- Design: dark premium + or champagne, Plus Jakarta Sans (inchangé après pivot)
 
 ## Personas
-- Client: cherche un artisan par métier/ville, consulte profils, réserve un créneau, suit ses réservations.
-- Artisan/Pro: crée son profil, s'abonne pour être référencé, gère les demandes (accepter/refuser/terminer).
+- Client: cherche un artisan, réserve, suit ses interventions, **gère ses biens et équipements**.
+- Artisan/Pro: crée son profil, s'abonne pour être référencé, gère les demandes.
 
 ## Architecture
-- Backend FastAPI (/api), MongoDB (motor). Auth par session_token Bearer (7j), bcrypt pour mots de passe.
-- Collections: users, user_sessions, artisan_profiles, bookings.
-- Frontend Expo Router. AuthContext. Thème /src/theme. Composants /src/components/ui.
-- Tabs client: Accueil, Réservations, Profil. Tabs artisan: Tableau de bord, Mon profil, Abonnement.
+- Backend FastAPI (/api), MongoDB (motor). Bearer session_token (7j), bcrypt.
+- 58 endpoints. Collections: users, user_sessions, artisan_profiles, bookings, conversations, missions, invoices, guarantees, home_passport, **properties, property_equipment, property_documents, property_reminders**.
+- Frontend Expo Router. AuthContext. Thème /src/theme.
+- Tabs client (5): Accueil, **Ma Maison**, Réservations, Messages, Profil.
+- Tabs artisan: Tableau de bord, Mon profil, Abonnement.
 
-## Implemented (2026-06-30)
+## Implemented (2026-07 — Sprint My Home)
+### Ma Maison — Home Operating System (NOUVEAU)
+- **Multi-biens** : 5 types (apartment, house, office, commercial, vacation). Photos base64, adresse, surface, année, notes.
+- **Property Dashboard** : hero image + gradient scrim, quick actions (Équipements/Documents/Timeline/Rappels), carte insights santé %, entretiens à venir, équipements récents, cartes IA "Bientôt disponible".
+- **Équipements** : 14 catégories (chaudière, chauffe-eau, PAC, tableau élec, clim, VMC, toit, fenêtres, portes, détecteurs, solaire, borne VE, adoucisseur, autre). Marque, modèle, N° série, installateur, dates installation/garantie, statut (ok/attention/maintenance/replace), notes, photos, documents liés.
+- **Documents (Passeport numérique)** : 8 catégories (factures, garanties, manuels, certificats, plans, photos, rapports, autres). Filtres par catégorie.
+- **Timeline agrégée** : équipements installés + documents ajoutés + interventions (bookings.property_id) + rappels terminés, groupés par année.
+- **Insights** : équipements OK / à surveiller, documents, upcoming maintenance, interventions, argent investi, santé moyenne %. Valeurs de démo réalistes quand vide.
+- **Rappels** : architecture prête (upcoming/due/done/snoozed), suggestions rapides, fréquences (once/monthly/quarterly/biannual/yearly). Pas de notifs (à venir).
+- **IA placeholders** : 6 cartes "Bientôt disponible" (Santé équipements, Maintenance prédictive, Détection risques, Optimisation énergétique, Expiration garanties, Inspection recommandée).
+- **Sécurité** : toutes les routes /properties requièrent Bearer, 401/404 propres.
+
 ### Phase 4 — Couche d'intelligence backend (architecte IA)
-- Moteur de matching pondéré modulaire `services/matching.py` branché sur POST /missions: score 0-100 (note, Trust, distance, acceptation, réactivité, complétion, expérience, prix, dispo, premium) + pénalité d'annulation; boost en mode urgence. Renvoie `match_score`, `match_label` (FR) et `match_reasons` (FR, "Pourquoi l'IA le recommande") — affichés sur l'écran matching.
-- Mode Urgence: broadcast aux top 5 pros (`notified_pros`, status `searching`), POST /missions/{id}/pro_accept = premier qui accepte gagne (409 sinon, 403 non sollicité, 400 hors urgence).
-- Architecture sync calendrier MOCKÉE `services/calendar_sync.py`: GET /artisans/{id}/availability (créneaux 2h, busy depuis bookings), POST /artisans/me/calendar/connect (google/outlook/apple mock).
-- Modèles future-ready: complete_mission génère facture + garantie 12 mois + entrée Home Passport. GET /home-passport, POST /home-passport/equipment, GET /invoices/mine, GET /guarantees/mine.
-- Stats artisan étendues: cancellation_rate, acceptance/response variés (seed + migration idempotente).
+- Moteur de matching pondéré `services/matching.py`: score 0-100 + `match_reasons` FR — affichés sur écran matching.
+- Mode Urgence: broadcast top 5 pros, premier qui accepte gagne.
+- Architecture sync calendrier MOCKÉE `services/calendar_sync.py`.
+- Modèles: complete_mission génère facture + garantie 12 mois + entrée Home Passport.
 
-## Implemented (antérieur)
 ### Phase 3 — AI-first premium pivot
-- Refonte design complète: thème premium DARK + accents OR CHAMPAGNE (Revolut/Apple), Plus Jakarta Sans.
-- Bouton "J'ai un problème" + écran Diagnostic IA: texte + photos (expo-image-picker) + voix (expo-audio → Whisper /ai/transcribe). GPT-4o vision (/ai/diagnose) → problème, métier, urgence, durée, fourchette de prix, matériel, score de confiance, conseil sécurité.
-- Matching IA automatique (/missions): scoring (note, Trust Score, acceptation, réponse, distance) → propose LE meilleur pro; refuser → pro suivant.
-- Mission flow: confirmer → suivi GPS/ETA temps réel simulé (/missions/{id}) avec carte (react-native-maps natif + fallback web) + compte à rebours + bouton terminer.
-- Trust Score par artisan; IA via clé universelle Emergent (GPT-4o + Whisper).
+- Design premium DARK + accents OR CHAMPAGNE, Plus Jakarta Sans.
+- Bouton "J'ai un problème" + écran Diagnostic IA (texte + photos + voix via Whisper).
+- Matching IA automatique, Trust Score par artisan, clé universelle Emergent (GPT-4o + Whisper).
 
 ### Phase 1 & 2
 - Auth email/password + Google (Emergent), rôles client/artisan.
-- Catégories de métiers (12), 12 artisans seedés.
-- Client: home (recherche + grille catégories + top artisans), liste/recherche artisans, fiche artisan + réservation créneau, mes réservations.
-- Artisan: dashboard (métriques + accept/refuse/terminer), édition profil pro, abonnement Premium (paiement simulé).
+- 12 catégories, 12 artisans seedés.
+- Client: home, liste/recherche artisans, fiche + réservation créneau, mes réservations.
+- Artisan: dashboard, édition profil, abonnement Premium simulé.
 
 ## Backlog
-- P1: Messagerie client↔artisan, avis/notes réels après mission, vraie intégration Stripe.
-- P1: Filtres avancés (prix, dispo), géolocalisation/carte.
-- P2: Notifications, upload photo profil/portfolio, historique gains artisan.
+- P1: Lier bookings/interventions à property_id via l'UI (déjà supporté côté schema).
+- P1: Upload documents réels (base64 file), stockage S3.
+- P1: Vraie intégration Stripe Connect (paiement + escrow + commission).
+- P1: Messagerie temps réel (WebSocket), avis réels après mission.
+- P2: Réelle IA sur les 6 cartes "Bientôt" (santé, maintenance prédictive, risques…).
+- P2: Notifications réelles sur rappels d'entretien (push).
+- P2: Dashboard admin, GPS artisan réel, mode Urgence multi-pros polish.
 
 ## Next tasks
-- Stripe Connect (paiement + escrow + commission) — phase suivante.
-- Rôles Admin/Support/Finance/Modération + dashboard admin (carte temps réel, litiges, stats, monitoring IA).
-- Acceptation réelle des missions côté artisan + notifications push.
-- Home Digital Passport (historique entretien, garanties, équipements).
-- GPS réel (artisan en mouvement), mode Urgence multi-pros simultané.
+- Attacher les interventions du diagnostic IA à un bien sélectionné.
+- Rendre 3 des 6 cartes IA fonctionnelles (santé équipement calculé, expiration garanties, inspection recommandée).
+- Notifications push sur rappels.

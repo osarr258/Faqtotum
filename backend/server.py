@@ -1222,20 +1222,19 @@ async def get_property(pid: str, user=Depends(get_current_user)):
     return await _get_property(pid, user["user_id"])
 
 @api_router.patch("/properties/{pid}")
-async def update_property(pid: str, body: PropertyInput, user=Depends(get_current_user)):
+async def update_property(pid: str, body: dict, user=Depends(get_current_user)):
     await _get_property(pid, user["user_id"])
-    if body.type not in PROPERTY_TYPES:
+    if "type" in body and body["type"] not in PROPERTY_TYPES:
         raise HTTPException(status_code=400, detail="Type de bien invalide")
-    updates = {
-        "name": body.name.strip(),
-        "type": body.type,
-        "address": (body.address or "").strip(),
-        "surface": body.surface,
-        "year_built": body.year_built,
-        "photos": body.photos or [],
-        "notes": (body.notes or "").strip(),
-        "updated_at": now_utc().isoformat(),
-    }
+    allowed = {"name", "type", "address", "surface", "year_built", "photos", "notes"}
+    updates = {k: v for k, v in body.items() if k in allowed}
+    if "name" in updates and isinstance(updates["name"], str):
+        updates["name"] = updates["name"].strip()
+    if "address" in updates and isinstance(updates["address"], str):
+        updates["address"] = updates["address"].strip()
+    if "notes" in updates and isinstance(updates["notes"], str):
+        updates["notes"] = updates["notes"].strip()
+    updates["updated_at"] = now_utc().isoformat()
     await db.properties.update_one({"property_id": pid}, {"$set": updates})
     return await db.properties.find_one({"property_id": pid}, {"_id": 0})
 
@@ -1291,12 +1290,15 @@ async def get_equipment(pid: str, eid: str, user=Depends(get_current_user)):
     return e
 
 @api_router.patch("/properties/{pid}/equipment/{eid}")
-async def update_equipment(pid: str, eid: str, body: EquipmentInput, user=Depends(get_current_user)):
+async def update_equipment(pid: str, eid: str, body: dict, user=Depends(get_current_user)):
     await _get_property(pid, user["user_id"])
     e = await db.property_equipment.find_one({"equipment_id": eid, "property_id": pid})
     if not e:
         raise HTTPException(status_code=404, detail="Équipement introuvable")
-    updates = body.dict()
+    if "status" in body and body["status"] not in EQUIPMENT_STATUSES:
+        raise HTTPException(status_code=400, detail="Statut invalide")
+    allowed = {"name", "category", "brand", "model", "serial_number", "installed_on", "installer", "warranty_until", "photos", "documents", "status", "notes"}
+    updates = {k: v for k, v in body.items() if k in allowed}
     updates["updated_at"] = now_utc().isoformat()
     await db.property_equipment.update_one({"equipment_id": eid}, {"$set": updates})
     return await db.property_equipment.find_one({"equipment_id": eid}, {"_id": 0})
