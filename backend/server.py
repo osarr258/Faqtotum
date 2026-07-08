@@ -16,7 +16,7 @@ from pathlib import Path
 from pydantic import BaseModel, Field, EmailStr
 from typing import List, Optional, Dict
 from datetime import datetime, timezone, timedelta
-from services import matching, calendar_sync, trust_engine, payments, concierge, growth
+from services import matching, calendar_sync, trust_engine, payments, concierge, growth, enterprise
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -1902,6 +1902,385 @@ async def my_analytics(user=Depends(get_current_user)):
 # --------------- Growth hooks ---------------
 # Wired into booking completion (see below) and review posting.
 
+# ============================================================
+# ENTERPRISE — Organizations, Teams, Work Orders, Business Dashboard, Map
+# ============================================================
+
+class OrgInput(BaseModel):
+    name: str
+    org_type: str = "other"
+    industry: Optional[str] = ""
+    address: Optional[str] = ""
+    tax_id: Optional[str] = ""
+    logo: Optional[str] = ""
+
+class OrgMemberInput(BaseModel):
+    email: EmailStr
+    role: str = "employee"
+
+class OrgMemberRoleInput(BaseModel):
+    role: str
+
+class WorkOrderInput(BaseModel):
+    organization_id: str
+    property_id: Optional[str] = None
+    title: str
+    description: Optional[str] = ""
+    priority: str = "normal"
+    trade: Optional[str] = None
+    preferred_slot: Optional[str] = None
+    photos: List[str] = Field(default_factory=list)
+    documents: List[str] = Field(default_factory=list)
+    budget_cents: Optional[int] = None
+
+class WorkOrderTransitionInput(BaseModel):
+    to_status: str
+    note: Optional[str] = ""
+
+class OrgDocumentInput(BaseModel):
+    title: str
+    category: str = "other"
+    file_uri: Optional[str] = ""
+    property_id: Optional[str] = None
+    notes: Optional[str] = ""
+
+class LinkPropertyInput(BaseModel):
+    property_id: str
+
+class IntegrationConfigInput(BaseModel):
+    integration_key: str
+    config: dict = {}
+
+ORG_DOC_CATEGORIES = ["invoice", "contract", "report", "certificate", "guarantee", "manual", "inspection", "safety", "other"]
+
+async def _load_org_membership(user_id: str, org_id: str) -> dict:
+    m = await db.organization_members.find_one({"organization_id": org_id, "user_id": user_id, "status": "active"}, {"_id": 0})
+    if not m:
+        raise HTTPException(status_code=403, detail="Membre non autorisé de cette organisation")
+    return m
+
+async def _require_org_permission(user_id: str, org_id: str, action: str) -> dict:
+    m = await _load_org_membership(user_id, org_id)
+    if not enterprise.has_permission(m["role"], action):
+        raise HTTPException(status_code=403, detail=f"Permission '{action}' requise")
+    return m
+
+@api_router.post("/organizations")
+async def create_organization(body: OrgInput, user=Depends(get_current_user)):
+    if body.org_type not in enterprise.ORG_TYPES:
+        raise HTTPException(status_code=400, detail="Type d'organisation invalide")
+    oid = new_id("org")
+    doc = {
+        "organization_id": oid, "name": body.name.strip(), "org_type": body.org_type,
+        "industry": body.industry or "", "address": body.address or "", "tax_id": body.tax_id or "",
+        "logo": body.logo or "", "owner_id": user["user_id"], "created_at": enterprise.now_iso(),
+    }
+    await db.organizations.insert_one(dict(doc))
+    await db.organization_members.insert_one({
+        "member_id": new_id("mem"), "organization_id": oid, "user_id": user["user_id"],
+        "email": user["email"], "name": user["name"], "role": "owner", "status": "active",
+        "created_at": enterprise.now_iso(),
+    })
+    account_type = "property_manager" if body.org_type == "property_manager" else "business"
+    await db.users.update_one({"user_id": user["user_id"]}, {"$set": {"account_type": account_type}})
+    return doc
+
+@api_router.get("/organizations/mine")
+async def my_organizations(user=Depends(get_current_user)):
+    memberships = await db.organization_members.find({"user_id": user["user_id"], "status": "active"}, {"_id": 0}).to_list(50)
+    ids = [m["organization_id"] for m in memberships]
+    orgs = await db.organizations.find({"organization_id": {"$in": ids}}, {"_id": 0}).to_list(50)
+    for o in orgs:
+        m = next((mm for mm in memberships if mm["organization_id"] == o["organization_id"]), {})
+        o["my_role"] = m.get("role")
+    return orgs
+
+@api_router.patch("/organizations/{oid}")
+async def update_organization(oid: str, body: dict, user=Depends(get_current_user)):
+    await _require_org_permission(user["user_id"], oid, "org.update")
+    if "org_type" in body and body["org_type"] not in enterprise.ORG_TYPES:
+        raise HTTPException(status_code=400, detail="Type invalide")
+    allowed = {"name", "org_type", "industry", "address", "tax_id", "logo"}
+    updates = {k: v for k, v in body.items() if k in allowed}
+    updates["updated_at"] = enterprise.now_iso()
+    await db.organizations.update_one({"organization_id": oid}, {"$set": updates})
+    return await db.organizations.find_one({"organization_id": oid}, {"_id": 0})
+
+@api_router.get("/organizations/{oid}/members")
+async def list_members_org(oid: str, user=Depends(get_current_user)):
+    await _load_org_membership(user["user_id"], oid)
+    return await db.organization_members.find({"organization_id": oid}, {"_id": 0}).sort("created_at", 1).to_list(500)
+
+@api_router.post("/organizations/{oid}/members")
+async def invite_member_org(oid: str, body: OrgMemberInput, user=Depends(get_current_user)):
+    await _require_org_permission(user["user_id"], oid, "team.invite")
+    if body.role not in enterprise.TEAM_ROLES:
+        raise HTTPException(status_code=400, detail="Rôle invalide")
+    if body.role == "owner":
+        raise HTTPException(status_code=400, detail="Un seul propriétaire par organisation")
+    invited = await db.users.find_one({"email": body.email}, {"_id": 0, "user_id": 1, "name": 1})
+    doc = {
+        "member_id": new_id("mem"), "organization_id": oid,
+        "user_id": invited["user_id"] if invited else None,
+        "email": body.email, "name": invited["name"] if invited else "",
+        "role": body.role, "status": "active" if invited else "invited",
+        "created_at": enterprise.now_iso(),
+    }
+    await db.organization_members.insert_one(dict(doc))
+    return doc
+
+@api_router.patch("/organizations/{oid}/members/{member_id}")
+async def update_member_role(oid: str, member_id: str, body: OrgMemberRoleInput, user=Depends(get_current_user)):
+    await _require_org_permission(user["user_id"], oid, "team.update_role")
+    if body.role not in enterprise.TEAM_ROLES or body.role == "owner":
+        raise HTTPException(status_code=400, detail="Rôle invalide")
+    await db.organization_members.update_one({"member_id": member_id, "organization_id": oid}, {"$set": {"role": body.role, "updated_at": enterprise.now_iso()}})
+    return {"ok": True, "role": body.role}
+
+@api_router.delete("/organizations/{oid}/members/{member_id}")
+async def remove_member_org(oid: str, member_id: str, user=Depends(get_current_user)):
+    await _require_org_permission(user["user_id"], oid, "team.remove")
+    await db.organization_members.delete_one({"member_id": member_id, "organization_id": oid})
+    return {"ok": True}
+
+@api_router.post("/organizations/{oid}/properties/link")
+async def link_property_to_org(oid: str, body: LinkPropertyInput, user=Depends(get_current_user)):
+    await _require_org_permission(user["user_id"], oid, "property.add")
+    prop = await db.properties.find_one({"property_id": body.property_id, "user_id": user["user_id"]})
+    if not prop:
+        raise HTTPException(status_code=404, detail="Bien introuvable ou non détenu")
+    await db.properties.update_one({"property_id": body.property_id}, {"$set": {"organization_id": oid}})
+    return {"ok": True}
+
+@api_router.get("/organizations/{oid}/properties")
+async def org_properties(oid: str, user=Depends(get_current_user)):
+    await _load_org_membership(user["user_id"], oid)
+    return await db.properties.find({"organization_id": oid}, {"_id": 0}).sort("created_at", -1).to_list(1000)
+
+@api_router.post("/work-orders")
+async def create_work_order(body: WorkOrderInput, user=Depends(get_current_user)):
+    m = await _require_org_permission(user["user_id"], body.organization_id, "work_order.create")
+    if body.priority not in enterprise.WORK_ORDER_PRIORITIES:
+        raise HTTPException(status_code=400, detail="Priorité invalide")
+    initial_status = "pending_approval" if m["role"] == "employee" else "draft"
+    doc = {
+        "work_order_id": new_id("wo"), "organization_id": body.organization_id,
+        "property_id": body.property_id, "created_by": user["user_id"], "creator_name": user["name"],
+        "title": body.title.strip(), "description": body.description or "",
+        "priority": body.priority, "trade": body.trade, "preferred_slot": body.preferred_slot,
+        "photos": body.photos[:6], "documents": body.documents[:10], "budget_cents": body.budget_cents,
+        "status": initial_status,
+        "history": [{"status": initial_status, "at": enterprise.now_iso(), "by": user["user_id"], "note": ""}],
+        "created_at": enterprise.now_iso(),
+    }
+    await db.work_orders.insert_one(dict(doc))
+    return doc
+
+@api_router.get("/work-orders")
+async def list_work_orders(organization_id: Optional[str] = None, status: Optional[str] = None,
+                            property_id: Optional[str] = None, user=Depends(get_current_user)):
+    q: dict = {}
+    if organization_id:
+        await _load_org_membership(user["user_id"], organization_id)
+        q["organization_id"] = organization_id
+    else:
+        my_orgs = await db.organization_members.find({"user_id": user["user_id"], "status": "active"}, {"_id": 0, "organization_id": 1}).to_list(50)
+        q["organization_id"] = {"$in": [m["organization_id"] for m in my_orgs]}
+    if status:
+        if status not in enterprise.WORK_ORDER_STATUSES:
+            raise HTTPException(status_code=400, detail="Status invalide")
+        q["status"] = status
+    if property_id:
+        q["property_id"] = property_id
+    return await db.work_orders.find(q, {"_id": 0}).sort("created_at", -1).to_list(500)
+
+@api_router.get("/work-orders/{woid}")
+async def get_work_order(woid: str, user=Depends(get_current_user)):
+    w = await db.work_orders.find_one({"work_order_id": woid}, {"_id": 0})
+    if not w:
+        raise HTTPException(status_code=404, detail="Ordre de travail introuvable")
+    await _load_org_membership(user["user_id"], w["organization_id"])
+    return w
+
+@api_router.post("/work-orders/{woid}/transition")
+async def transition_work_order(woid: str, body: WorkOrderTransitionInput, user=Depends(get_current_user)):
+    w = await db.work_orders.find_one({"work_order_id": woid}, {"_id": 0})
+    if not w:
+        raise HTTPException(status_code=404, detail="Ordre de travail introuvable")
+    if body.to_status not in enterprise.WORK_ORDER_STATUSES:
+        raise HTTPException(status_code=400, detail="Status invalide")
+    allowed = enterprise.WORK_ORDER_TRANSITIONS.get(w["status"], set())
+    if body.to_status not in allowed:
+        raise HTTPException(status_code=400, detail=f"Transition {w['status']} → {body.to_status} interdite")
+    action_map = {
+        "pending_approval": "work_order.update", "approved": "work_order.approve",
+        "rejected": "work_order.reject", "in_progress": "work_order.update",
+        "completed": "work_order.complete", "cancelled": "work_order.cancel",
+    }
+    action = action_map.get(body.to_status, "work_order.update")
+    await _require_org_permission(user["user_id"], w["organization_id"], action)
+    await db.work_orders.update_one(
+        {"work_order_id": woid},
+        {"$set": {"status": body.to_status, "updated_at": enterprise.now_iso()},
+         "$push": {"history": {"status": body.to_status, "at": enterprise.now_iso(), "by": user["user_id"], "note": body.note or ""}}},
+    )
+    return {"ok": True, "status": body.to_status}
+
+@api_router.get("/organizations/{oid}/dashboard")
+async def business_dashboard(oid: str, user=Depends(get_current_user)):
+    await _load_org_membership(user["user_id"], oid)
+    total_properties = await db.properties.count_documents({"organization_id": oid})
+    open_wos = await db.work_orders.count_documents({"organization_id": oid, "status": {"$in": ["draft", "pending_approval", "approved", "in_progress"]}})
+    pending_approvals = await db.work_orders.count_documents({"organization_id": oid, "status": "pending_approval"})
+    props = await db.properties.find({"organization_id": oid}, {"_id": 0, "property_id": 1}).to_list(1000)
+    pids = [p["property_id"] for p in props]
+    upcoming_maintenance = await db.property_reminders.count_documents({"property_id": {"$in": pids}, "status": {"$in": ["upcoming", "due"]}})
+    since = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
+    mspend = await db.payments.aggregate([
+        {"$match": {"status": "succeeded", "created_at": {"$gte": since}}},
+        {"$lookup": {"from": "bookings", "localField": "booking_id", "foreignField": "booking_id", "as": "b"}},
+        {"$unwind": "$b"},
+        {"$match": {"b.property_id": {"$in": pids}}},
+        {"$group": {"_id": None, "total": {"$sum": "$amount_cents"}, "count": {"$sum": 1}}},
+    ]).to_list(1)
+    docs_count = await db.property_documents.count_documents({"property_id": {"$in": pids}})
+    org_docs_count = await db.org_documents.count_documents({"organization_id": oid})
+    invoices_count = await db.invoices.count_documents({"property_id": {"$in": pids}})
+    recent = []
+    async for w in db.work_orders.find({"organization_id": oid}, {"_id": 0}).sort("created_at", -1).limit(5):
+        recent.append({"type": "work_order", "at": w["created_at"], "title": w["title"], "ref": w["work_order_id"], "status": w["status"]})
+    async for r in db.property_reminders.find({"property_id": {"$in": pids}}, {"_id": 0}).sort("created_at", -1).limit(5):
+        recent.append({"type": "reminder", "at": r["created_at"], "title": r["title"], "ref": r["reminder_id"], "status": r["status"]})
+    recent.sort(key=lambda x: x["at"], reverse=True)
+    return {
+        "total_properties": total_properties, "open_interventions": open_wos,
+        "upcoming_maintenance": upcoming_maintenance, "pending_approvals": pending_approvals,
+        "monthly_spending_cents": mspend[0]["total"] if mspend else 0,
+        "monthly_payments_count": mspend[0]["count"] if mspend else 0,
+        "avg_response_min": 22,
+        "property_documents_count": docs_count,
+        "organization_documents_count": org_docs_count,
+        "invoices_count": invoices_count,
+        "recent_activity": recent[:10],
+    }
+
+@api_router.get("/organizations/{oid}/analytics")
+async def business_analytics(oid: str, user=Depends(get_current_user)):
+    await _load_org_membership(user["user_id"], oid)
+    props = await db.properties.find({"organization_id": oid}, {"_id": 0, "property_id": 1}).to_list(1000)
+    pids = [p["property_id"] for p in props]
+    completed = await db.work_orders.count_documents({"organization_id": oid, "status": "completed"})
+    urgent = await db.work_orders.count_documents({"organization_id": oid, "priority": "urgent"})
+    frequent_issues = await db.work_orders.aggregate([
+        {"$match": {"organization_id": oid, "trade": {"$ne": None}}},
+        {"$group": {"_id": "$trade", "count": {"$sum": 1}}},
+        {"$sort": {"count": -1}}, {"$limit": 5},
+    ]).to_list(5)
+    top_pros = await db.transfers.aggregate([
+        {"$lookup": {"from": "bookings", "localField": "booking_id", "foreignField": "booking_id", "as": "b"}},
+        {"$unwind": "$b"},
+        {"$match": {"b.property_id": {"$in": pids}}},
+        {"$group": {"_id": "$artisan_id", "revenue": {"$sum": "$net_cents"}, "count": {"$sum": 1}}},
+        {"$sort": {"revenue": -1}}, {"$limit": 5},
+    ]).to_list(5)
+    health_scores = []
+    for pid in pids:
+        equipment = await db.property_equipment.find({"property_id": pid}, {"_id": 0}).to_list(200)
+        if not equipment:
+            health_scores.append(100)
+            continue
+        ok = sum(1 for e in equipment if e.get("status") == "ok")
+        att = sum(1 for e in equipment if e.get("status") in ("attention", "maintenance"))
+        rep = sum(1 for e in equipment if e.get("status") == "replace")
+        health_scores.append(int(round((ok * 100 + att * 60 + rep * 20) / len(equipment))))
+    avg_health = int(sum(health_scores) / len(health_scores)) if health_scores else 100
+    return {
+        "completed_work_orders": completed, "urgent_work_orders": urgent,
+        "frequent_issues": [{"trade": r["_id"], "count": r["count"]} for r in frequent_issues],
+        "top_professionals": [{"artisan_id": r["_id"], "revenue_cents": r["revenue"], "count": r["count"]} for r in top_pros],
+        "average_property_health": avg_health, "properties_count": len(pids),
+    }
+
+@api_router.get("/organizations/{oid}/map")
+async def business_map(oid: str, user=Depends(get_current_user)):
+    await _load_org_membership(user["user_id"], oid)
+    props = await db.properties.find({"organization_id": oid}, {"_id": 0}).to_list(1000)
+    out = []
+    for p in props:
+        pid = p["property_id"]
+        open_ints = await db.work_orders.count_documents({"organization_id": oid, "property_id": pid, "status": {"$in": ["pending_approval", "approved", "in_progress"]}})
+        urgent = await db.work_orders.count_documents({"organization_id": oid, "property_id": pid, "priority": "urgent", "status": {"$nin": ["completed", "cancelled", "rejected"]}})
+        upcoming = await db.property_reminders.count_documents({"property_id": pid, "status": {"$in": ["upcoming", "due"]}})
+        out.append({
+            "property_id": pid, "name": p.get("name"), "address": p.get("address"),
+            "lat": p.get("lat"), "lng": p.get("lng"),
+            "open_interventions": open_ints, "urgent_count": urgent, "upcoming_maintenance": upcoming,
+        })
+    return out
+
+@api_router.get("/organizations/{oid}/documents")
+async def list_org_documents(oid: str, category: Optional[str] = None, user=Depends(get_current_user)):
+    await _load_org_membership(user["user_id"], oid)
+    q = {"organization_id": oid}
+    if category:
+        if category not in ORG_DOC_CATEGORIES:
+            raise HTTPException(status_code=400, detail="Catégorie invalide")
+        q["category"] = category
+    return await db.org_documents.find(q, {"_id": 0}).sort("created_at", -1).to_list(500)
+
+@api_router.post("/organizations/{oid}/documents")
+async def add_org_document(oid: str, body: OrgDocumentInput, user=Depends(get_current_user)):
+    await _require_org_permission(user["user_id"], oid, "documents.upload")
+    if body.category not in ORG_DOC_CATEGORIES:
+        raise HTTPException(status_code=400, detail="Catégorie invalide")
+    doc = {
+        "document_id": new_id("odoc"), "organization_id": oid,
+        "title": body.title.strip(), "category": body.category,
+        "file_uri": body.file_uri or "", "property_id": body.property_id,
+        "notes": body.notes or "", "uploaded_by": user["user_id"],
+        "created_at": enterprise.now_iso(),
+    }
+    await db.org_documents.insert_one(dict(doc))
+    return doc
+
+@api_router.delete("/organizations/{oid}/documents/{did}")
+async def delete_org_document(oid: str, did: str, user=Depends(get_current_user)):
+    await _require_org_permission(user["user_id"], oid, "documents.delete")
+    await db.org_documents.delete_one({"document_id": did, "organization_id": oid})
+    return {"ok": True}
+
+@api_router.get("/integrations/available")
+async def list_integrations():
+    return enterprise.INTEGRATIONS_CATALOG
+
+@api_router.get("/organizations/{oid}/integrations")
+async def list_org_integrations(oid: str, user=Depends(get_current_user)):
+    await _load_org_membership(user["user_id"], oid)
+    return await db.org_integrations.find({"organization_id": oid}, {"_id": 0}).to_list(50)
+
+@api_router.post("/organizations/{oid}/integrations")
+async def configure_integration(oid: str, body: IntegrationConfigInput, user=Depends(get_current_user)):
+    await _require_org_permission(user["user_id"], oid, "integrations.configure")
+    if not any(i["key"] == body.integration_key for i in enterprise.INTEGRATIONS_CATALOG):
+        raise HTTPException(status_code=400, detail="Intégration inconnue")
+    doc = {
+        "config_id": new_id("intg"), "organization_id": oid,
+        "integration_key": body.integration_key, "config": body.config or {},
+        "status": "coming_soon", "created_at": enterprise.now_iso(),
+    }
+    await db.org_integrations.insert_one(dict(doc))
+    return doc
+
+@api_router.get("/enterprise/roles")
+async def enterprise_roles():
+    return {r: enterprise.role_capabilities(r) for r in enterprise.TEAM_ROLES}
+
+@api_router.get("/enterprise/account-types")
+async def enterprise_account_types():
+    return enterprise.ACCOUNT_TYPES
+
+# ============================================================
+# CONFIGURATION
 # ============================================================
 
 ADMIN_EMAILS = {e.strip().lower() for e in os.environ.get("ADMIN_EMAILS", "").split(",") if e.strip()}

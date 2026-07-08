@@ -1,0 +1,44 @@
+{
+  "summary": "Enterprise / B2B sprint — backend testing complete. 60 new tests written in tests/test_enterprise_sprint.py covering the pure services/enterprise.py module (ACCOUNT_TYPES=6, ORG_TYPES=12, TEAM_ROLES=7, PERMISSIONS matrix, WORK_ORDER_STATUSES=7, WORK_ORDER_TRANSITIONS state machine, has_permission()) plus all 24 new endpoints in server.py. All 60 enterprise tests PASSED. Regression suite (my_home 27 + trust_engine 23 + fintech_sprint 28 + concierge 24 + growth_sprint 75 = 177 tests) also PASSED. Total 237/237 GREEN. Verified: org create/list/patch RBAC + validations; members invite (known→active, unknown→invited), role updates, remove; property linkage 404/403; work-order creation (owner→draft, employee→pending_approval), full state machine draft→pending_approval→approved→in_progress→completed with 5-entry history, invalid/terminal transitions all 400; dashboard returns all 11 required keys; analytics has 6 keys with top_professionals & frequent_issues ≤5; map exposes per-property coords + counts; document upload/list/delete with 9 categories; integrations catalog (10 items, 5 families, all coming_soon), configure requires integrations.configure (owner only); /enterprise/roles owner≥20/employee=2/viewer=0 sorted; /enterprise/account-types returns 6. Non-member 403 verified against isolated org where pro is never invited.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "POST /api/organizations/{oid}/members", "issue": "No duplicate-invite guard: inviting the same email twice creates two membership rows (both with same user_id if known). Not a spec violation, but downstream role lookups via find_one may pick either row nondeterministically."},
+      {"endpoint": "POST /api/work-orders/{woid}/transition", "issue": "Terminal-state (completed/rejected/cancelled) transition attempts return generic 400 'Transition X → Y interdite' — behaviour correct but message reuses the invalid-transition branch. Consider a distinct 409/message for terminal states for clearer API semantics."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_enterprise_sprint.py",
+    "/app/test_reports/pytest/enterprise_sprint.xml",
+    "/app/test_reports/pytest/regression_after_enterprise.xml"
+  ],
+  "action_items": [
+    "Optional hardening: reject duplicate active memberships on POST /organizations/{oid}/members when a row for the same email/user_id already exists.",
+    "Optional: differentiate error message/status for terminal-state work-order transitions vs plain invalid transitions."
+  ],
+  "critical_code_review_comments": [
+    "services/enterprise.py is small, pure, and correctly declarative — PERMISSIONS matrix, WORK_ORDER_TRANSITIONS, and INTEGRATIONS_CATALOG shapes all match the spec exactly.",
+    "Enterprise endpoints in server.py properly funnel through _load_org_membership / _require_org_permission — RBAC checks precede any DB write on every enterprise route.",
+    "PATCH /organizations/{oid} correctly whitelists {name, org_type, industry, address, tax_id, logo}; owner_id and other fields are not writable.",
+    "Work-order create sets initial_status = 'pending_approval' if role == 'employee' else 'draft' — correctly bypasses draft-only flow for employees.",
+    "All Mongo queries exclude _id — no ObjectId serialization issues detected."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_enterprise_sprint.py (created — 60 tests)"
+  ],
+  "success_rate": {
+    "backend": "100% (60/60 new + 177/177 regression = 237/237)",
+    "frontend": "N/A — backend-only sprint per review request"
+  },
+  "seed_data_creation": "Test creates two fresh orgs per run: TEST_org_<hex> (used for RBAC flow with pro invited then downgraded) and TEST_iso_<hex> (used for non-member 403 assertions where pro is never invited). All test documents/work-orders are prefixed TEST_. No modification to seed org_2d79cd03d073 beyond adding TEST_ documents and one integration config; earlier state (1 linked property, existing work orders) remains intact.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Enterprise sprint test file at /app/backend/tests/test_enterprise_sprint.py is idempotent — safe to re-run any number of times. It creates two throwaway orgs per session via fixtures. Note: TestOrgMembers::test_employee_creates_in_pending_approval PATCHes ALL of pro's memberships in the new_org to 'employee'; this is intentional (defensive in case earlier logic ever creates duplicates). SEED constants at top (SEED_ORG_ID=org_2d79cd03d073, SEED_PROP_ID=prop_b0858d7dc142, SEED_WO_ID=wo_787eb7df847a) must remain valid — if the seed is wiped, the 'seed_org_owner_role', 'seed_org_lists_property', and 'list_all_my_orgs_no_filter' tests will fail and need the main agent to re-seed.",
+  "rca_of_issue": "No unresolved bugs. Initial test-authoring iteration surfaced 9 mistakes on my side (all in test code, none in product code): (a) email validation rejects .test TLDs → switched to @example.com; (b) pro IS a manager in the seed org per the credentials note, so using SEED_ORG_ID for non-member 403 assertions was wrong → introduced an iso_org fixture (fresh org pro is never invited to); (c) trying to re-invite pro after downgrade duplicated memberships → PATCH the existing member row instead. After these test-only fixes, all 60 enterprise assertions pass on the first try against the production code."
+}
