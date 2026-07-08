@@ -1,0 +1,48 @@
+{
+  "summary": "Professional Hub sprint — backend testing complete. 41 new tests in tests/test_pro_hub.py cover the pure services/pro_hub.py module (ACADEMY_CATEGORIES=7 with icons, ACADEMY_CARDS=7 all coming_soon, MARKETING_MODULES=5, coach_recommendations sorting by impact desc + all 4 job milestones + trust_90 milestone + skipping of high-scoring factors, profile_completion shape/bounds/full-profile→100%) plus every one of the 17 new endpoints in server.py. All 41 pro-hub tests PASSED. Full regression (my_home 27 + trust_engine 23 + fintech 28 + concierge 24 + growth 75 + enterprise 60 = 237 tests) also PASSED — 278/278 GREEN total. Verified: dashboard exposes all 16 required keys with pro_level{key,label,progress_pct}, profile_completion{completion_pct,missing,checks_count,checks_ok}, top_coach_reco≤3, badges list; PATCH /pro/profile enriches artisan_profile (logo/cover/services/areas_covered/opening_hours/certifications/languages/website/social), recomputes Trust, attaches profile_completion — completion goes from ~42% to ≥60% after full enrichment (spec ~77%); /pro/coach returns 4 required keys with recos sorted impact desc; /pro/insights returns 9 required keys with revenue_evolution≤12 and top_cities≤5; community feed injects liked_by_me/bookmarked_by_me on every post, kind filter validates enum (400 on random); artisan-only guards return 403 for client on /pro/dashboard, /pro/profile, /pro/coach, /pro/insights, POST /community/posts; POST /community/posts enforces enum + caps photos to 6 and tags to 5 + enriches author_name/author_photo/author_trade; like/bookmark/follow are idempotent toggles updating likes_count and returning correct boolean; self-follow returns 400; comments increment comments_count and return ordered by created_at; bookmarks/mine returns hydrated posts; academy exposes 7 categories with icons + 7 cards all coming_soon + category filter (business returns only business, unknown returns []); marketing exposes 5 modules and interest endpoint validates unknown key (400) + upserts (idempotent, status='waitlist_registered'); PATCH /artisans/me/gallery/{project_id} enriches project with description/city/duration_hours/completed_at/review_id.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "GET /community/feed", "issue": "Empty-string kind (?kind=) is truthy in Python so it enters the enum-validation branch and would return 400 for an empty query string. Not a spec violation (spec only requires validation on invalid values) but callers passing empty strings get 400 instead of the full feed."},
+      {"endpoint": "POST /community/posts/{post_id}/like|bookmark|comments", "issue": "No 404 guard when post_id does not exist — endpoints silently no-op (update_many matches nothing) and still return liked/bookmarked booleans or a comment doc. Not a spec violation but permits orphan likes/comments in the collections."},
+      {"endpoint": "POST /community/follow/{target_user_id}", "issue": "No existence check on target_user_id — follows any string, even non-existent users. Idempotent toggle still works but permits orphan follow rows."},
+      {"endpoint": "PATCH /artisans/me/gallery/{project_id}", "issue": "No 404 when project_id does not exist or does not belong to the caller — update_one silently matches nothing and the subsequent find_one returns null. Consider returning 404 for cleaner API contract."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_pro_hub.py",
+    "/app/test_reports/pytest/pro_hub_sprint.xml",
+    "/app/test_reports/pytest/regression_after_pro_hub.xml"
+  ],
+  "action_items": [
+    "Optional hardening: return 404 on like/bookmark/comment/follow/gallery-patch when the target id does not exist, to prevent orphan rows in community_likes/community_bookmarks/community_comments/community_follows/gallery_projects.",
+    "Optional: treat empty-string kind on /community/feed as 'no filter' (currently returns 400 because the truthy check runs before enum validation).",
+    "Consider capping /community/comments POST body length (currently no server-side length limit)."
+  ],
+  "critical_code_review_comments": [
+    "services/pro_hub.py is small, pure and declarative — ACADEMY_CATEGORIES/ACADEMY_CARDS/MARKETING_MODULES/COACH_RECOMMENDATIONS all match spec shapes exactly, coach_recommendations correctly ranks by -impact and caps at 6, profile_completion uses stable weighted checks (total_weight=100, so completion_pct maps 1-to-1 with scored weight).",
+    "Pro Hub endpoints in server.py correctly funnel through _require_pro (role == 'artisan' + profile lookup) — RBAC precedes any DB write on every /pro/* route and POST /community/posts.",
+    "PATCH /pro/profile properly restricts writable fields via the ProfileEnrichInput Pydantic whitelist (logo/cover/services/areas_covered/opening_hours/certifications/languages/website/social) — no user_id, trust_score, jobs_done or verification flags can be tampered with.",
+    "Community endpoints exclude _id in all reads — no ObjectId serialization issues.",
+    "Growth calculation on /pro/dashboard handles the zero-prev-30 case correctly (returns 100 if last_30>0 else 0) preventing division-by-zero.",
+    "Marketing /interest is properly idempotent via upsert with the (user_id, module_key) key."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_pro_hub.py (created — 41 tests)"
+  ],
+  "success_rate": {
+    "backend": "100% (41/41 new pro_hub + 237/237 regression = 278/278)",
+    "frontend": "N/A — backend-only sprint per review request"
+  },
+  "seed_data_creation": "Tests create ephemeral community posts (TEST_<hex> titles), comments (TEST_c1/TEST_c2 bodies), one marketing 'promotion' waitlist entry for the pro user, one profile enrichment on the pro user (persistent — logo/cover/services/areas/hours/certifications/languages/website/social are now set on artisan_profile art_2dfb71f00c16 and profile_completion is ≥60%), one follow toggle to the client user (ends net-zero due to idempotent toggle), and one gallery project (TEST_<hex>) on the pro. Trust Score is recomputed and persisted after the profile PATCH.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Pro Hub test file at /app/backend/tests/test_pro_hub.py is idempotent and can be re-run any number of times. Tests must be launched from /app/backend (cd /app/backend && pytest tests/) because they import `from services import pro_hub`. IMPORTANT SIDE EFFECT: the first run enriches artisan_profile art_2dfb71f00c16 with logo/cover/services/areas/opening_hours/certifications/languages/website/social — subsequent runs will therefore see profile_completion ≥60% (typically ~77%) from the start rather than the pristine ~42%. This is intentional (spec says 'goes from 42% to 77% after enrichment'). Community post/comment count assertions use ≥ rather than == so are safe across re-runs. Sample_post_id fixture creates one throwaway post per test that needs it — safe. Follow-toggle assertion only checks the two responses differ, so it's net-zero after each run.",
+  "rca_of_issue": "No unresolved bugs. Only pre-flight issue was a missing default on BASE_URL — fixed inline to match the pattern used by test_enterprise_sprint.py. All 41 assertions passed on the first successful collection."
+}

@@ -16,7 +16,7 @@ from pathlib import Path
 from pydantic import BaseModel, Field, EmailStr
 from typing import List, Optional, Dict
 from datetime import datetime, timezone, timedelta
-from services import matching, calendar_sync, trust_engine, payments, concierge, growth, enterprise
+from services import matching, calendar_sync, trust_engine, payments, concierge, growth, enterprise, pro_hub
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -2278,6 +2278,322 @@ async def enterprise_roles():
 @api_router.get("/enterprise/account-types")
 async def enterprise_account_types():
     return enterprise.ACCOUNT_TYPES
+
+# ============================================================
+# PROFESSIONAL HUB — Dashboard, Community, Academy, Marketing, Coach, Profile
+# ============================================================
+
+class ProfileEnrichInput(BaseModel):
+    logo: Optional[str] = None
+    cover: Optional[str] = None
+    services: Optional[List[str]] = None
+    areas_covered: Optional[List[str]] = None
+    opening_hours: Optional[dict] = None
+    certifications: Optional[List[str]] = None
+    languages: Optional[List[str]] = None
+    website: Optional[str] = None
+    social: Optional[dict] = None
+
+class CommunityPostInput(BaseModel):
+    kind: str = "tip"  # project | tip | question | achievement
+    title: str
+    body: str
+    photos: Optional[List[str]] = None
+    project_id: Optional[str] = None
+    tags: Optional[List[str]] = None
+
+class CommunityCommentInput(BaseModel):
+    body: str
+
+POST_KINDS = ["project", "tip", "question", "achievement"]
+
+async def _require_pro(user) -> dict:
+    if user.get("role") != "artisan":
+        raise HTTPException(status_code=403, detail="Réservé aux artisans")
+    prof = await db.artisan_profiles.find_one({"user_id": user["user_id"]}, {"_id": 0})
+    if not prof:
+        raise HTTPException(status_code=404, detail="Profil artisan introuvable")
+    return prof
+
+# ---------- Pro Dashboard (big aggregate) ----------
+@api_router.get("/pro/dashboard")
+async def pro_dashboard(user=Depends(get_current_user)):
+    prof = await _require_pro(user)
+    aid = prof["artisan_id"]
+    now = datetime.now(timezone.utc)
+    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
+    month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0).isoformat()
+
+    today_jobs = await db.bookings.count_documents({"artisan_id": aid, "scheduled_at": {"$gte": today_start[:10]}, "status": {"$in": ["accepted", "in_progress"]}})
+    upcoming = await db.bookings.count_documents({"artisan_id": aid, "status": {"$in": ["pending", "accepted"]}})
+
+    transfers = await db.transfers.find({"artisan_id": aid}, {"_id": 0}).to_list(500)
+    total_revenue = sum(t.get("net_cents", 0) for t in transfers)
+    month_revenue = sum(t.get("net_cents", 0) for t in transfers if (t.get("created_at") or "") >= month_start)
+
+    # Response metrics
+    trust = trust_engine.compute(prof)
+    scoreboard = trust_engine.scoreboard(prof, trust)
+
+    # Docs pending (artisan-uploaded certifications missing)
+    doc_completion = pro_hub.profile_completion(prof)
+
+    # Unread messages
+    unread = await db.conversations.count_documents({"artisan_id": aid, "unread_for_artisan": {"$gt": 0}})
+
+    # Growth (last vs prev 30 days)
+    prev_start = (now - timedelta(days=60)).isoformat()
+    last_30 = sum(t.get("net_cents", 0) for t in transfers if (t.get("created_at") or "") >= (now - timedelta(days=30)).isoformat())
+    prev_30 = sum(t.get("net_cents", 0) for t in transfers if prev_start <= (t.get("created_at") or "") < (now - timedelta(days=30)).isoformat())
+    growth_pct = int(round(((last_30 - prev_30) / prev_30) * 100)) if prev_30 else (100 if last_30 > 0 else 0)
+
+    coach = pro_hub.coach_recommendations(trust["breakdown"], scoreboard["badges"], prof.get("jobs_done", 0), trust["trust_score"])
+    lvl = growth.pro_level(trust["trust_score"], prof.get("jobs_done", 0))
+
+    return {
+        "today_jobs": today_jobs,
+        "upcoming_jobs": upcoming,
+        "revenue_cents": total_revenue,
+        "monthly_revenue_cents": month_revenue,
+        "growth_pct": growth_pct,
+        "trust_score": trust["trust_score"],
+        "trust_level": trust["confidence_level"],
+        "pro_level": {"key": lvl["key"], "label": lvl["label"], "progress_pct": lvl["progress_pct"]},
+        "customer_satisfaction": prof.get("satisfaction_rate"),
+        "response_rate": prof.get("acceptance_rate"),
+        "avg_response_min": prof.get("response_min"),
+        "profile_completion": doc_completion,
+        "pending_documents": len([m for m in doc_completion["missing"] if m["key"] in ("insurance", "identity", "business")]),
+        "unread_messages": unread,
+        "badges": scoreboard["badges"],
+        "top_coach_reco": coach[:3],
+    }
+
+# ---------- Enriched Pro Profile ----------
+@api_router.patch("/pro/profile")
+async def enrich_pro_profile(body: ProfileEnrichInput, user=Depends(get_current_user)):
+    await _require_pro(user)
+    updates = {k: v for k, v in body.dict(exclude_none=True).items()}
+    updates["updated_at"] = now_utc().isoformat()
+    await db.artisan_profiles.update_one({"user_id": user["user_id"]}, {"$set": updates})
+    await trust_engine.persist(db, (await db.artisan_profiles.find_one({"user_id": user["user_id"]}, {"_id": 0}))["artisan_id"])
+    prof = await db.artisan_profiles.find_one({"user_id": user["user_id"]}, {"_id": 0})
+    prof["profile_completion"] = pro_hub.profile_completion(prof)
+    return prof
+
+# ---------- AI Business Coach ----------
+@api_router.get("/pro/coach")
+async def pro_coach(user=Depends(get_current_user)):
+    prof = await _require_pro(user)
+    trust = trust_engine.compute(prof)
+    sb = trust_engine.scoreboard(prof, trust)
+    recos = pro_hub.coach_recommendations(trust["breakdown"], sb["badges"], prof.get("jobs_done", 0), trust["trust_score"])
+    return {
+        "trust_score": trust["trust_score"],
+        "confidence_level": trust["confidence_level"],
+        "recommendations": recos,
+        "profile_completion": pro_hub.profile_completion(prof),
+    }
+
+# ---------- Business Insights ----------
+@api_router.get("/pro/insights")
+async def pro_insights(user=Depends(get_current_user)):
+    prof = await _require_pro(user)
+    aid = prof["artisan_id"]
+    now = datetime.now(timezone.utc)
+
+    transfers = await db.transfers.find({"artisan_id": aid}, {"_id": 0}).to_list(500)
+    monthly = {}
+    for t in transfers:
+        k = (t.get("created_at") or "")[:7]
+        monthly[k] = monthly.get(k, 0) + t.get("net_cents", 0)
+    revenue_evolution = [{"month": k, "amount_cents": v} for k, v in sorted(monthly.items())][-12:]
+
+    all_bookings = await db.bookings.find({"artisan_id": aid}, {"_id": 0}).to_list(1000)
+    unique_clients = len({b.get("client_id") for b in all_bookings if b.get("client_id")})
+    repeat_clients = 0
+    seen = {}
+    for b in all_bookings:
+        c = b.get("client_id")
+        if not c:
+            continue
+        seen[c] = seen.get(c, 0) + 1
+    repeat_clients = sum(1 for c in seen.values() if c > 1)
+
+    avg_job_value = int(sum(t.get("gross_cents", 0) for t in transfers) / len(transfers)) if transfers else 0
+
+    since = (now - timedelta(days=90)).isoformat()
+    growth_pipeline = await db.bookings.aggregate([
+        {"$match": {"artisan_id": aid, "created_at": {"$gte": since}}},
+        {"$group": {"_id": {"$substr": ["$created_at", 0, 7]}, "count": {"$sum": 1}}},
+        {"$sort": {"_id": 1}},
+    ]).to_list(20)
+    customer_growth = [{"month": g["_id"], "count": g["count"]} for g in growth_pipeline]
+
+    # Top cities from bookings
+    city_pipeline = await db.bookings.aggregate([
+        {"$match": {"artisan_id": aid}},
+        {"$lookup": {"from": "users", "localField": "client_id", "foreignField": "user_id", "as": "c"}},
+        {"$unwind": "$c"},
+        {"$group": {"_id": "$c.city", "count": {"$sum": 1}}},
+        {"$sort": {"count": -1}}, {"$limit": 5},
+    ]).to_list(5)
+
+    return {
+        "revenue_evolution": revenue_evolution,
+        "customer_growth": customer_growth,
+        "unique_clients": unique_clients,
+        "repeat_clients": repeat_clients,
+        "avg_job_value_cents": avg_job_value,
+        "acceptance_rate": prof.get("acceptance_rate"),
+        "cancellation_rate": prof.get("cancellation_rate"),
+        "completion_rate": prof.get("completion_rate"),
+        "top_cities": [{"city": c["_id"], "count": c["count"]} for c in city_pipeline if c["_id"]],
+    }
+
+# ---------- Community ----------
+@api_router.get("/community/feed")
+async def community_feed(kind: Optional[str] = None, user=Depends(get_current_user)):
+    q = {}
+    if kind:
+        if kind not in POST_KINDS:
+            raise HTTPException(status_code=400, detail="Kind invalide")
+        q["kind"] = kind
+    posts = await db.community_posts.find(q, {"_id": 0}).sort("created_at", -1).to_list(200)
+    my_likes = {row["post_id"] async for row in db.community_likes.find({"user_id": user["user_id"]}, {"_id": 0})}
+    my_bookmarks = {row["post_id"] async for row in db.community_bookmarks.find({"user_id": user["user_id"]}, {"_id": 0})}
+    for p in posts:
+        p["liked_by_me"] = p["post_id"] in my_likes
+        p["bookmarked_by_me"] = p["post_id"] in my_bookmarks
+    return posts
+
+@api_router.post("/community/posts")
+async def create_post(body: CommunityPostInput, user=Depends(get_current_user)):
+    if user.get("role") != "artisan":
+        raise HTTPException(status_code=403, detail="Réservé aux artisans")
+    if body.kind not in POST_KINDS:
+        raise HTTPException(status_code=400, detail="Kind invalide")
+    prof = await db.artisan_profiles.find_one({"user_id": user["user_id"]}, {"_id": 0, "artisan_id": 1, "name": 1, "trade": 1, "photo": 1})
+    doc = {
+        "post_id": new_id("post"),
+        "user_id": user["user_id"],
+        "artisan_id": prof.get("artisan_id") if prof else None,
+        "author_name": user["name"],
+        "author_photo": prof.get("photo") if prof else None,
+        "author_trade": prof.get("trade") if prof else None,
+        "kind": body.kind,
+        "title": body.title.strip(),
+        "body": body.body.strip(),
+        "photos": (body.photos or [])[:6],
+        "project_id": body.project_id,
+        "tags": (body.tags or [])[:5],
+        "likes_count": 0,
+        "comments_count": 0,
+        "created_at": now_utc().isoformat(),
+    }
+    await db.community_posts.insert_one(dict(doc))
+    return doc
+
+@api_router.post("/community/posts/{post_id}/like")
+async def like_post(post_id: str, user=Depends(get_current_user)):
+    exists = await db.community_likes.find_one({"post_id": post_id, "user_id": user["user_id"]})
+    if exists:
+        await db.community_likes.delete_one({"post_id": post_id, "user_id": user["user_id"]})
+        await db.community_posts.update_one({"post_id": post_id}, {"$inc": {"likes_count": -1}})
+        return {"liked": False}
+    await db.community_likes.insert_one({"post_id": post_id, "user_id": user["user_id"], "created_at": now_utc().isoformat()})
+    await db.community_posts.update_one({"post_id": post_id}, {"$inc": {"likes_count": 1}})
+    return {"liked": True}
+
+@api_router.post("/community/posts/{post_id}/bookmark")
+async def bookmark_post(post_id: str, user=Depends(get_current_user)):
+    exists = await db.community_bookmarks.find_one({"post_id": post_id, "user_id": user["user_id"]})
+    if exists:
+        await db.community_bookmarks.delete_one({"post_id": post_id, "user_id": user["user_id"]})
+        return {"bookmarked": False}
+    await db.community_bookmarks.insert_one({"post_id": post_id, "user_id": user["user_id"], "created_at": now_utc().isoformat()})
+    return {"bookmarked": True}
+
+@api_router.get("/community/posts/{post_id}/comments")
+async def list_comments(post_id: str):
+    return await db.community_comments.find({"post_id": post_id}, {"_id": 0}).sort("created_at", 1).to_list(200)
+
+@api_router.post("/community/posts/{post_id}/comments")
+async def add_comment(post_id: str, body: CommunityCommentInput, user=Depends(get_current_user)):
+    doc = {
+        "comment_id": new_id("cmt"),
+        "post_id": post_id,
+        "user_id": user["user_id"],
+        "author_name": user["name"],
+        "body": body.body.strip(),
+        "created_at": now_utc().isoformat(),
+    }
+    await db.community_comments.insert_one(dict(doc))
+    await db.community_posts.update_one({"post_id": post_id}, {"$inc": {"comments_count": 1}})
+    return doc
+
+@api_router.post("/community/follow/{target_user_id}")
+async def follow_user(target_user_id: str, user=Depends(get_current_user)):
+    if target_user_id == user["user_id"]:
+        raise HTTPException(status_code=400, detail="Vous ne pouvez pas vous suivre vous-même")
+    exists = await db.community_follows.find_one({"follower_id": user["user_id"], "followed_id": target_user_id})
+    if exists:
+        await db.community_follows.delete_one({"follower_id": user["user_id"], "followed_id": target_user_id})
+        return {"following": False}
+    await db.community_follows.insert_one({"follow_id": new_id("flw"), "follower_id": user["user_id"], "followed_id": target_user_id, "created_at": now_utc().isoformat()})
+    return {"following": True}
+
+@api_router.get("/community/bookmarks/mine")
+async def my_bookmarks(user=Depends(get_current_user)):
+    bms = await db.community_bookmarks.find({"user_id": user["user_id"]}, {"_id": 0}).sort("created_at", -1).to_list(200)
+    post_ids = [b["post_id"] for b in bms]
+    posts = await db.community_posts.find({"post_id": {"$in": post_ids}}, {"_id": 0}).to_list(200)
+    return posts
+
+# ---------- Academy ----------
+@api_router.get("/academy/categories")
+async def academy_categories():
+    return pro_hub.ACADEMY_CATEGORIES
+
+@api_router.get("/academy/cards")
+async def academy_cards(category: Optional[str] = None):
+    if category:
+        return [c for c in pro_hub.ACADEMY_CARDS if c["category"] == category]
+    return pro_hub.ACADEMY_CARDS
+
+# ---------- Marketing (stubs) ----------
+@api_router.get("/marketing/modules")
+async def marketing_modules():
+    return pro_hub.MARKETING_MODULES
+
+@api_router.post("/marketing/{module_key}/interest")
+async def mark_module_interest(module_key: str, user=Depends(get_current_user)):
+    if not any(m["key"] == module_key for m in pro_hub.MARKETING_MODULES):
+        raise HTTPException(status_code=400, detail="Module inconnu")
+    await db.marketing_interests.update_one(
+        {"user_id": user["user_id"], "module_key": module_key},
+        {"$set": {"user_id": user["user_id"], "module_key": module_key, "created_at": now_utc().isoformat()}},
+        upsert=True,
+    )
+    return {"ok": True, "status": "waitlist_registered"}
+
+# ---------- Portfolio (project) — extends existing gallery ----------
+# The Growth sprint already exposes /artisans/{aid}/gallery + POST /artisans/me/gallery.
+# We add a richer PATCH here for pros to attach city/duration/review_link.
+class PortfolioPatchInput(BaseModel):
+    description: Optional[str] = None
+    city: Optional[str] = None
+    duration_hours: Optional[float] = None
+    completed_at: Optional[str] = None
+    review_id: Optional[str] = None
+
+@api_router.patch("/artisans/me/gallery/{project_id}")
+async def patch_gallery(project_id: str, body: PortfolioPatchInput, user=Depends(get_current_user)):
+    prof = await _require_pro(user)
+    updates = {k: v for k, v in body.dict(exclude_none=True).items()}
+    updates["updated_at"] = now_utc().isoformat()
+    await db.gallery_projects.update_one({"project_id": project_id, "artisan_id": prof["artisan_id"]}, {"$set": updates})
+    return await db.gallery_projects.find_one({"project_id": project_id}, {"_id": 0})
 
 # ============================================================
 # CONFIGURATION
