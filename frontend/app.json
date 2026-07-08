@@ -11,7 +11,8 @@
     "ios": {
       "supportsTablet": true,
       "infoPlist": {
-        "NSLocationWhenInUseUsageDescription": "Trouver les artisans proches de vous"
+        "NSLocationWhenInUseUsageDescription": "Trouver les artisans proches de vous",
+        "NSFaceIDUsageDescription": "Déverrouillez Auxora avec Face ID"
       },
       "bundleIdentifier": "com.emergent.reviensapp.uwn3nc"
     },
@@ -23,7 +24,9 @@
       "edgeToEdgeEnabled": true,
       "permissions": [
         "ACCESS_FINE_LOCATION",
-        "ACCESS_COARSE_LOCATION"
+        "ACCESS_COARSE_LOCATION",
+        "USE_BIOMETRIC",
+        "USE_FINGERPRINT"
       ],
       "package": "com.emergent.reviensapp.uwn3nc"
     },

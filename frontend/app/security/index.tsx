@@ -46,6 +46,7 @@ export default function SecurityCenter() {
 
   const rows = [
     { icon: "phone-portrait-outline", label: "Sessions actives", sub: `${data?.active_sessions ?? 0} appareil(s)`, to: "/security/sessions" },
+    { icon: "scan-outline", label: "Face ID / Touch ID", sub: "Déverrouillage biométrique", to: "/security/biometric" },
     { icon: "key-outline", label: "Authentification à 2 facteurs", sub: data?.mfa?.enabled ? "Activée" : "Non activée", to: "/security/mfa" },
     { icon: "lock-closed-outline", label: "Changer le mot de passe", sub: "Recommandé tous les 90 jours", to: "/security/password" },
     { icon: "document-text-outline", label: "Journal d'activité", sub: "Historique de vos actions", to: "/security/audit" },

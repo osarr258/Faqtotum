@@ -217,3 +217,16 @@ Application de mise en relation à la Uber/Airbnb connectant les clients (partic
 - Section trust "POURQUOI AUXORA ?" (3 cards) affichée avant conversation
 - Backend : réutilise `/api/ai/diagnose` (GPT-4o via Emergent LLM Key)
 - Tab bar : "Accueil" → "Helpo"
+
+## Sprint 11 — Auto-login + Face ID / Touch ID (LIVRÉ)
+- **Auto-login** : token session déjà persisté via `SecureStore` (iOS Keychain / Android EncryptedSharedPreferences) — l'utilisateur reste connecté au relancement.
+- **Biométrie** via `expo-local-authentication` (17.0.8) :
+  - Nouveau helper `src/utils/biometric.ts` : `getBiometricSupport()`, `authenticateWithBiometric()`, `isBiometricEnabled()`, etc.
+  - Détection auto Face ID / Touch ID / Reconnaissance faciale / Empreinte / Iris
+- **AuthContext étendu** : `locked`, `unlockWithBiometric`, `enableBiometric`, `disableBiometric`, `biometricEnabled`
+- **Flow activation** : après première connexion (email/Google), prompt automatique "Activer Face ID ?" (une seule fois)
+- **Flow verrouillage** : à l'ouverture, si token + biométrie activée → écran de verrouillage plein écran avec prompt natif Face ID immédiat + option "Utiliser un autre compte"
+- **Nouvel écran** `/security/biometric` : toggle on/off avec info sur l'appareil (Face ID / Touch ID détecté automatiquement)
+- **Sécurité** : logout désactive automatiquement la biométrie pour empêcher la réutilisation d'un token révoqué
+- **Permissions** : `NSFaceIDUsageDescription` (iOS) + `USE_BIOMETRIC`, `USE_FINGERPRINT` (Android) ajoutés à app.json
+- **Note** : la biométrie n'est testable que sur build natif (iOS/Android), pas Expo Go ni web

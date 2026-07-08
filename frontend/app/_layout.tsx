@@ -1,4 +1,4 @@
-import { Stack } from "expo-router";
+import { Stack, useRouter } from "expo-router";
 import { StatusBar } from "expo-status-bar";
 import * as SplashScreen from "expo-splash-screen";
 import { useEffect } from "react";
@@ -9,10 +9,20 @@ import { KeyboardProvider } from "react-native-keyboard-controller";
 import { useFonts } from "expo-font";
 
 import { useIconFonts } from "@/src/hooks/use-icon-fonts";
-import { AuthProvider } from "@/src/context/AuthContext";
+import { AuthProvider, useAuth } from "@/src/context/AuthContext";
+import LockScreen from "@/src/components/LockScreen";
 
 LogBox.ignoreAllLogs(true);
 SplashScreen.preventAutoHideAsync();
+
+function GateContent() {
+  const { locked } = useAuth();
+  const router = useRouter();
+  if (locked) {
+    return <LockScreen onFallbackLogin={() => router.replace("/welcome")} />;
+  }
+  return <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: "#0B0B0F" } }} />;
+}
 
 export default function RootLayout() {
   const [iconsLoaded, iconErr] = useIconFonts();
@@ -38,7 +48,7 @@ export default function RootLayout() {
         <SafeAreaProvider>
           <AuthProvider>
             <StatusBar style="light" />
-            <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: "#0B0B0F" } }} />
+            <GateContent />
           </AuthProvider>
         </SafeAreaProvider>
       </KeyboardProvider>

@@ -1,8 +1,16 @@
 import React, { createContext, useContext, useEffect, useState, useCallback } from "react";
-import { Platform } from "react-native";
+import { Alert, Platform } from "react-native";
 import * as WebBrowser from "expo-web-browser";
 import * as Linking from "expo-linking";
 import { api, setToken, clearToken, getToken } from "@/src/api";
+import {
+  authenticateWithBiometric,
+  getBiometricSupport,
+  isBiometricEnabled,
+  markBiometricAsked,
+  setBiometricEnabled,
+  wasBiometricAsked,
+} from "@/src/utils/biometric";
 
 export type User = {
   user_id: string;
@@ -15,11 +23,16 @@ export type User = {
 type AuthState = {
   user: User | null;
   loading: boolean;
+  locked: boolean;
   register: (email: string, password: string, name: string, role: string) => Promise<void>;
   login: (email: string, password: string) => Promise<void>;
   loginWithGoogle: (role: string) => Promise<void>;
   logout: () => Promise<void>;
   refresh: () => Promise<void>;
+  unlockWithBiometric: () => Promise<boolean>;
+  enableBiometric: () => Promise<boolean>;
+  disableBiometric: () => Promise<void>;
+  biometricEnabled: boolean;
 };
 
 const AuthContext = createContext<AuthState>({} as AuthState);
@@ -28,6 +41,8 @@ export const useAuth = () => useContext(AuthContext);
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
+  const [locked, setLocked] = useState(false);
+  const [biometricEnabled, setBiometricEnabledState] = useState(false);
 
   const loadMe = useCallback(async () => {
     try {
@@ -44,6 +59,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
+  // On app boot: if token exists AND biometric enabled → LOCK until unlock.
   useEffect(() => {
     (async () => {
       // Web: handle session_id returned in URL from Google auth
@@ -61,7 +77,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             });
             await setToken(data.token);
             setUser(data.user);
-          } catch (e) {
+          } catch {
             // ignore
           }
           window.history.replaceState(null, "", window.location.pathname);
@@ -69,10 +85,69 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           return;
         }
       }
+
+      const token = await getToken();
+      const bioOn = await isBiometricEnabled();
+      setBiometricEnabledState(bioOn);
+
+      if (token && bioOn && Platform.OS !== "web") {
+        // Require biometric before restoring session
+        setLocked(true);
+        setLoading(false);
+        // Try to unlock immediately
+        const ok = await authenticateWithBiometric("Déverrouillez Auxora");
+        if (ok) {
+          setLocked(false);
+          await loadMe();
+        } else {
+          // User cancelled — stay locked, they can retry via UI
+        }
+        return;
+      }
+
       await loadMe();
       setLoading(false);
     })();
   }, [loadMe]);
+
+  const unlockWithBiometric = useCallback(async () => {
+    const ok = await authenticateWithBiometric("Déverrouillez Auxora");
+    if (ok) {
+      setLocked(false);
+      await loadMe();
+    }
+    return ok;
+  }, [loadMe]);
+
+  const promptEnableBiometric = useCallback(async () => {
+    if (Platform.OS === "web") return;
+    const asked = await wasBiometricAsked();
+    if (asked) return;
+    const alreadyOn = await isBiometricEnabled();
+    if (alreadyOn) return;
+    const sup = await getBiometricSupport();
+    if (!sup.supported || !sup.enrolled) return;
+
+    await markBiometricAsked();
+    Alert.alert(
+      `Activer ${sup.label} ?`,
+      `Connectez-vous plus rapidement grâce à ${sup.label}.`,
+      [
+        { text: "Plus tard", style: "cancel" },
+        {
+          text: "Activer",
+          onPress: async () => {
+            const ok = await authenticateWithBiometric(`Confirmez avec ${sup.label}`);
+            if (ok) {
+              await setBiometricEnabled(true);
+              setBiometricEnabledState(true);
+              Alert.alert("Activé", `${sup.label} est maintenant activé.`);
+            }
+          },
+        },
+      ]
+    );
+  }, []);
 
   const register = async (email: string, password: string, name: string, role: string) => {
     const data = await api<{ token: string; user: User }>("/auth/register", {
@@ -82,6 +157,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     });
     await setToken(data.token);
     setUser(data.user);
+    setLocked(false);
+    setTimeout(() => promptEnableBiometric(), 800);
   };
 
   const login = async (email: string, password: string) => {
@@ -92,6 +169,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     });
     await setToken(data.token);
     setUser(data.user);
+    setLocked(false);
+    setTimeout(() => promptEnableBiometric(), 800);
   };
 
   const loginWithGoogle = async (role: string) => {
@@ -114,6 +193,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     });
     await setToken(data.token);
     setUser(data.user);
+    setLocked(false);
+    setTimeout(() => promptEnableBiometric(), 800);
   };
 
   const logout = async () => {
@@ -121,11 +202,54 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       await api("/auth/logout", { method: "POST" });
     } catch {}
     await clearToken();
+    // Also disable biometric on explicit logout so token can't be re-used
+    await setBiometricEnabled(false);
+    setBiometricEnabledState(false);
+    setLocked(false);
     setUser(null);
   };
 
+  const enableBiometric = useCallback(async () => {
+    if (Platform.OS === "web") return false;
+    const sup = await getBiometricSupport();
+    if (!sup.supported) {
+      Alert.alert("Non disponible", "Votre appareil ne prend pas en charge la biométrie.");
+      return false;
+    }
+    if (!sup.enrolled) {
+      Alert.alert("Non configuré", `Configurez ${sup.label} dans les réglages de votre appareil.`);
+      return false;
+    }
+    const ok = await authenticateWithBiometric(`Confirmez avec ${sup.label}`);
+    if (ok) {
+      await setBiometricEnabled(true);
+      setBiometricEnabledState(true);
+    }
+    return ok;
+  }, []);
+
+  const disableBiometric = useCallback(async () => {
+    await setBiometricEnabled(false);
+    setBiometricEnabledState(false);
+  }, []);
+
   return (
-    <AuthContext.Provider value={{ user, loading, register, login, loginWithGoogle, logout, refresh: loadMe }}>
+    <AuthContext.Provider
+      value={{
+        user,
+        loading,
+        locked,
+        register,
+        login,
+        loginWithGoogle,
+        logout,
+        refresh: loadMe,
+        unlockWithBiometric,
+        enableBiometric,
+        disableBiometric,
+        biometricEnabled,
+      }}
+    >
       {children}
     </AuthContext.Provider>
   );
