@@ -318,7 +318,7 @@ class TestProLevels:
         assert r.status_code == 200
         levels = r.json()
         assert len(levels) == 5
-        assert [l["key"] for l in levels] == ["bronze", "silver", "gold", "platinum", "elite"]
+        assert [lvl["key"] for lvl in levels] == ["bronze", "silver", "gold", "platinum", "elite"]
 
     def test_artisan_level_endpoint(self, s):
         r = s.get(f"{API}/artisans/{SEED_PRO_ID}/level", timeout=15)
@@ -406,7 +406,7 @@ class TestMaintenancePlanner:
         r1 = s.post(f"{API}/properties/{client_property_id}/maintenance-plan/generate-reminders",
                     headers=h(client_token), timeout=15)
         assert r1.status_code == 200
-        first_created = r1.json()["created"]
+        assert r1.json()["created"] >= 0
 
         # Second call — should not duplicate; created should be 0.
         r2 = s.post(f"{API}/properties/{client_property_id}/maintenance-plan/generate-reminders",

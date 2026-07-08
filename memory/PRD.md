@@ -23,6 +23,27 @@ Application de mise en relation à la Uber/Airbnb connectant les clients (partic
 - Tabs client (5): Accueil, **Ma Maison**, Réservations, Messages, Profil.
 - Tabs artisan: Tableau de bord, Mon profil, Abonnement.
 
+## Implemented (2026-07 — Sprint Growth & Retention)
+### Ecosystem for long-term retention (25+ endpoints)
+- **`services/growth.py`** : pro levels (5 tiers bronze/silver/gold/platinum/elite basés sur Trust + jobs, JAMAIS subscription), loyalty tiers (member/silver/gold/platinum/vip), health_label mapping, maintenance intervals par catégorie d'équipement, referral codes déterministes (uuid5 → AUX + 5 hex).
+- **My Trusted Pros** : `GET/POST/DELETE /trusted-pros`. Idempotent.
+- **Loyalty Program** :
+  - `GET /loyalty/summary` (points, lifetime, tier, next_tier, rewards, earn_actions)
+  - `GET /loyalty/ledger` (historique complet)
+  - `POST /loyalty/redeem {reward_key}` (10€/25€ remise, priority_support, ai_boost, vip_status)
+  - **Hooks automatiques** : booking_completed=+100 pts (client), review_posted=+25 pts, property_created=+50 pts, equipment_added=+10 pts, maintenance_completed=+75 pts, referral_converted=+500 pts (referrer) / +200 (referred).
+- **Referral System** : `GET /referrals/mine` (code déterministe AUX+5hex, invitations, converted count) + `POST /referrals/redeem` (self-referral 400, dup 400, unknown code 404).
+- **Pro Levels** : `GET /artisans/{aid}/level` (label + progress_pct + next_level). `GET /growth/levels` catalog.
+- **Before/After Gallery** : `GET /artisans/{aid}/gallery`, `POST/DELETE /artisans/me/gallery` (max 6 photos before + 6 after, base64).
+- **Property Health Score** : `GET /properties/{pid}/health` — pondéré (ok=100, attention/maintenance=60, replace=20). Empty → 100 excellent demo=true.
+- **Maintenance Planner** : `GET /properties/{pid}/maintenance-plan` (schedule complet) + `POST .../generate-reminders` (idempotent, crée automatiquement des rappels dans `property_reminders`). 13 catégories couvertes.
+- **Business Accounts** : `POST /business/setup`, `GET /business/mine`. 7 types (individual, company, property_manager, real_estate, hotel, restaurant, retail_chain). Architecture prête pour multi-property management.
+- **Family Sharing** : `GET/POST/DELETE /properties/{pid}/members`. 5 rôles (owner/partner/child/tenant/manager) + permissions granulaires (can_book/can_view_documents/can_add_equipment). Status active si email connu, sinon invited.
+- **Favourites** : `GET/POST/DELETE /favourites`. 3 kinds (pro/property/address). Idempotent.
+- **Customer Analytics** : `GET /analytics/mine` — bookings/completed/total_spent/money_saved (heuristique 15%)/avg_repair_cost/avg_response_min/favourite_trade/trades_breakdown/property_count.
+- **Tests** : 75/75 pytest `test_growth_sprint.py` + 102/102 régression = **177/177 GREEN**.
+- **Collections nouvelles** : `trusted_pros`, `loyalty_summary`, `loyalty_ledger`, `loyalty_rewards`, `referrals`, `gallery_projects`, `business_accounts`, `property_members`, `favourites`.
+
 ## Implemented (2026-07 — Sprint AI Concierge / AURA)
 ### AURA — Conversational Home Assistant (flagship)
 - **`services/concierge.py`** : moteur conversationnel multi-tour propulsé par GPT-4o + Whisper (via `emergentintegrations.LlmChat`). Prompt système strict → JSON. `initial_greeting()` déterministe (aucun appel LLM). `_augment_safety()` = filet de sécurité keyword-based indépendant du modèle (odeur gaz, électrocuté, inondation, effondrement → alerte forcée). `_sanitize()` garantit le schéma quoi qu'il arrive.
