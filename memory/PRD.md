@@ -230,3 +230,50 @@ Application de mise en relation à la Uber/Airbnb connectant les clients (partic
 - **Sécurité** : logout désactive automatiquement la biométrie pour empêcher la réutilisation d'un token révoqué
 - **Permissions** : `NSFaceIDUsageDescription` (iOS) + `USE_BIOMETRIC`, `USE_FINGERPRINT` (Android) ajoutés à app.json
 - **Note** : la biométrie n'est testable que sur build natif (iOS/Android), pas Expo Go ni web
+
+## Sprint 12 — Live Map Uber-style + Instant Intervention + Manual Slots (LIVRÉ)
+
+### Backend (13 nouveaux endpoints)
+- `POST /api/artisans/me/position` — l'artisan pousse sa position GPS (avec `available_now`)
+- `POST /api/artisans/me/available-now` — toggle "Dispo maintenant"
+- `GET /api/artisans/nearby?lat=&lng=&radius=&category=&only_available_now=` — géo-recherche avec haversine + ETA calculé (basé sur distance × 3 min/km, min 5, max 120)
+- `POST /api/interventions/request` — client crée une demande d'intervention immédiate
+- `GET /api/interventions/mine` — liste (client OU artisan)
+- `GET /api/interventions/{id}` — détail avec RBAC
+- `POST /api/interventions/{id}/accept` — artisan accepte
+- `POST /api/interventions/{id}/refuse` — artisan refuse (avec reason)
+- `POST /api/interventions/{id}/cancel` — client annule
+- `POST /api/artisans/me/slots` — artisan crée un créneau manuel
+- `GET /api/artisans/me/slots` — liste ses créneaux
+- `DELETE /api/artisans/me/slots/{id}` — supprime
+- `GET /api/artisans/{id}/slots` — client voit les créneaux dispos (futurs, non bookés)
+- `GET /api/calendar/oauth/status` — stub OAuth Google/Outlook (prochain sprint)
+
+### Frontend
+- **Auxora diagnostic** : après identification du métier → 2 CTAs stylisés (or / glass)
+- **`/live-map`** : carte Uber-style avec :
+  - Positions GPS live (fallback simulation déterministe si pas de position live)
+  - Radius chips 2 / 5 / 10 / 25 / 50 km
+  - Toggle "Dispo maintenant"
+  - Polling toutes les 8s
+  - Bottom sheet horizontal avec mini-cards des pros
+  - Sélection pro → card étendue + "Demander maintenant" + "Voir fiche & créneaux"
+- **`/intervention/[id]`** : suivi en direct de la demande, polling 4s, pulse animé, états visuels (pending / accepted / refused / cancelled)
+- **`/(artisan)/live`** (nouveau tab "Live") :
+  - Toggle "Disponible maintenant" (push position GPS toutes les 20s si actif)
+  - Inbox des demandes en attente avec Accepter / Refuser
+  - Éditeur de créneaux manuels
+  - Teaser Google Calendar / Outlook OAuth (prochain sprint)
+- **Nouveaux composants** : `LiveMap.tsx` (natif react-native-maps) + `LiveMap.web.tsx` (fallback stylisé)
+
+### Détails techniques
+- Positions live : polling 8s côté client, push 20s côté artisan
+- Empty state map : suggestion d'élargir le rayon
+- Haptic feedback à chaque action (selection, medium, heavy, notification)
+- Permissions Location déjà en place (client + artisan)
+
+### Note importante
+Real-time via **polling** (pas de WebSocket) — plus simple à shipper, robuste, suffisant pour cet MVP. Une migration WebSocket peut se faire dans un futur sprint si nécessaire.
+
+### OAuth Google/Outlook Calendar
+Architecture prête (endpoint `/calendar/oauth/status`, teaser UI). Vraie intégration Google Cloud + client_id/secret prévue pour un prochain sprint dédié.

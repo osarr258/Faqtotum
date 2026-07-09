@@ -422,17 +422,51 @@ export default function HelpoHome() {
                       )}
                     </View>
                     <Txt size="base" style={[styles.aiText, { marginTop: 12 }]}>
-                      Voulez-vous voir les meilleurs {diag.trade_label.toLowerCase()}s vérifiés près de chez vous ?
+                      Comment souhaitez-vous procéder ?
                     </Txt>
                     {!showPros && (
-                      <Pressable
-                        testID="view-pros-btn"
-                        onPress={loadPros}
-                        style={({ pressed }) => [styles.viewProsBtn, pressed && { opacity: 0.85 }]}
-                      >
-                        <Txt weight="bold" color={COLORS.bg}>Voir les professionnels</Txt>
-                        <Ionicons name="arrow-forward" size={16} color={COLORS.bg} style={{ marginLeft: 6 }} />
-                      </Pressable>
+                      <View style={{ gap: 10, marginTop: 14 }}>
+                        <Pressable
+                          testID="cta-immediate"
+                          onPress={() => {
+                            Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
+                            router.push({
+                              pathname: "/live-map",
+                              params: {
+                                trade: diag!.trade,
+                                trade_label: diag!.trade_label,
+                                description: text,
+                                urgency: diag!.urgency,
+                              },
+                            });
+                          }}
+                          style={({ pressed }) => [styles.ctaPrimary, pressed && { opacity: 0.85 }]}
+                        >
+                          <View style={styles.ctaIcon}>
+                            <Ionicons name="flash" size={20} color={COLORS.bg} />
+                          </View>
+                          <View style={{ flex: 1 }}>
+                            <Txt weight="bold" color={COLORS.bg}>Intervention immédiate</Txt>
+                            <Txt size="sm" color="rgba(11,11,11,0.7)">Voir les pros dispo autour de vous</Txt>
+                          </View>
+                          <Ionicons name="arrow-forward" size={18} color={COLORS.bg} />
+                        </Pressable>
+
+                        <Pressable
+                          testID="cta-schedule"
+                          onPress={loadPros}
+                          style={({ pressed }) => [styles.ctaSecondary, pressed && { opacity: 0.75 }]}
+                        >
+                          <View style={styles.ctaIconGlass}>
+                            <Ionicons name="calendar-outline" size={20} color={COLORS.accent} />
+                          </View>
+                          <View style={{ flex: 1 }}>
+                            <Txt weight="bold" color={COLORS.white}>Réserver un créneau</Txt>
+                            <Txt size="sm" color={COLORS.secondary}>Choisir une date qui vous arrange</Txt>
+                          </View>
+                          <Ionicons name="arrow-forward" size={18} color={COLORS.secondary} />
+                        </Pressable>
+                      </View>
                     )}
                   </View>
                 )}
@@ -758,6 +792,34 @@ const styles = StyleSheet.create({
     borderRadius: 14,
     paddingVertical: 14,
     marginTop: 16,
+  },
+  ctaPrimary: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: COLORS.accent,
+    borderRadius: 16,
+    padding: 14,
+    gap: 12,
+  },
+  ctaSecondary: {
+    flexDirection: "row",
+    alignItems: "center",
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    backgroundColor: COLORS.bgSoft,
+    borderRadius: 16,
+    padding: 14,
+    gap: 12,
+  },
+  ctaIcon: {
+    width: 40, height: 40, borderRadius: 12,
+    backgroundColor: "rgba(11,11,11,0.14)",
+    alignItems: "center", justifyContent: "center",
+  },
+  ctaIconGlass: {
+    width: 40, height: 40, borderRadius: 12,
+    backgroundColor: "rgba(200,169,107,0.15)",
+    alignItems: "center", justifyContent: "center",
   },
 
   chatThumb: { width: 60, height: 60, borderRadius: 10 },

@@ -14,7 +14,7 @@ from emergentintegrations.llm.chat import LlmChat, UserMessage, ImageContent
 from emergentintegrations.llm.openai.speech_to_text import OpenAISpeechToText
 from pathlib import Path
 from pydantic import BaseModel, Field, EmailStr
-from typing import List, Optional, Dict
+from typing import List, Optional, Dict, Any
 from datetime import datetime, timezone, timedelta
 from services import matching, calendar_sync, trust_engine, payments, concierge, growth, enterprise, pro_hub, security
 
@@ -482,6 +482,18 @@ async def subscribe(user=Depends(get_current_user)):
         {"$set": {"is_subscribed": True, "subscription_expires": expires}},
     )
     return {"ok": True, "subscription_expires": expires}
+
+# Literal route defined BEFORE the parameterized /artisans/{artisan_id}
+@api_router.get("/artisans/nearby")
+async def artisans_nearby_early(
+    lat: float,
+    lng: float,
+    radius: float = 10.0,
+    category: Optional[str] = None,
+    only_available_now: bool = False,
+    limit: int = 30,
+):
+    return await _artisans_nearby_impl(lat, lng, radius, category, only_available_now, limit)
 
 @api_router.get("/artisans/{artisan_id}")
 async def get_artisan(artisan_id: str):
@@ -3820,6 +3832,279 @@ async def admin_list_sessions(
     ).sort("last_seen_at", -1).limit(min(500, limit))
     sessions = await cursor.to_list(500)
     return {"sessions": sessions, "total": len(sessions)}
+
+
+# ==================================================================
+# Sprint 12 — Live Map (Uber-style) + Instant Intervention + Manual Slots
+# ==================================================================
+import math as _math
+
+class PositionInput(BaseModel):
+    lat: float
+    lng: float
+    available_now: Optional[bool] = None
+
+class InterventionRequestInput(BaseModel):
+    artisan_id: str
+    description: str
+    lat: float
+    lng: float
+    trade: Optional[str] = None
+    urgency: Optional[str] = None
+    price_estimate_min: Optional[float] = None
+    price_estimate_max: Optional[float] = None
+
+class InterventionActionInput(BaseModel):
+    reason: Optional[str] = None
+
+class SlotInput(BaseModel):
+    date: str  # YYYY-MM-DD
+    start_time: str  # HH:MM
+    duration_min: int = 60
+    recurring: Optional[str] = None  # "weekly" | None
+
+
+def _haversine_km(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
+    R = 6371.0
+    dlat = _math.radians(lat2 - lat1)
+    dlng = _math.radians(lng2 - lng1)
+    a = _math.sin(dlat / 2) ** 2 + _math.cos(_math.radians(lat1)) * _math.cos(_math.radians(lat2)) * _math.sin(dlng / 2) ** 2
+    return R * 2 * _math.atan2(_math.sqrt(a), _math.sqrt(1 - a))
+
+
+# ----- Artisan: publish live position -----
+@api_router.post("/artisans/me/position")
+async def update_position(data: PositionInput, user=Depends(get_current_user)):
+    if user.get("role") != "artisan":
+        raise HTTPException(status_code=403, detail="Réservé aux artisans")
+    profile = await db.artisan_profiles.find_one({"user_id": user["user_id"]})
+    if not profile:
+        raise HTTPException(status_code=404, detail="Créez d'abord votre profil")
+    update = {
+        "live_lat": data.lat,
+        "live_lng": data.lng,
+        "live_updated_at": now_utc().isoformat(),
+    }
+    if data.available_now is not None:
+        update["available_now"] = bool(data.available_now)
+    await db.artisan_profiles.update_one(
+        {"artisan_id": profile["artisan_id"]},
+        {"$set": update},
+    )
+    return {"ok": True, **update}
+
+
+@api_router.post("/artisans/me/available-now")
+async def toggle_available_now(user=Depends(get_current_user)):
+    if user.get("role") != "artisan":
+        raise HTTPException(status_code=403, detail="Réservé aux artisans")
+    profile = await db.artisan_profiles.find_one({"user_id": user["user_id"]})
+    if not profile:
+        raise HTTPException(status_code=404, detail="Créez d'abord votre profil")
+    new_val = not bool(profile.get("available_now"))
+    await db.artisan_profiles.update_one(
+        {"artisan_id": profile["artisan_id"]},
+        {"$set": {"available_now": new_val, "available_now_since": now_utc().isoformat() if new_val else None}},
+    )
+    return {"available_now": new_val}
+
+
+# ----- Client: nearby artisans with live positions -----
+async def _artisans_nearby_impl(lat, lng, radius, category, only_available_now, limit):
+    query: Dict[str, Any] = {"is_subscribed": True}
+    if category:
+        query["trade"] = category
+    artisans = await db.artisan_profiles.find(query, {"_id": 0}).to_list(300)
+    enriched: List[Dict[str, Any]] = []
+    for a in artisans:
+        alat = a.get("live_lat") or a.get("lat")
+        alng = a.get("live_lng") or a.get("lng")
+        if alat is None or alng is None:
+            seed = sum(ord(c) for c in a.get("artisan_id", "x")) % 100
+            alat = lat + (seed - 50) * 0.0004
+            alng = lng + ((seed * 7) % 100 - 50) * 0.0004
+            a["_position_source"] = "simulated"
+        else:
+            a["_position_source"] = "live" if a.get("live_lat") else "base"
+        dist = _haversine_km(lat, lng, alat, alng)
+        if dist > radius:
+            continue
+        a2 = await enrich_artisan(a)
+        a2["current_lat"] = alat
+        a2["current_lng"] = alng
+        a2["distance_km"] = round(dist, 2)
+        a2["eta_min"] = int(min(120, max(5, dist * 3 + 5)))
+        a2["available_now"] = bool(a.get("available_now"))
+        a2["position_source"] = a["_position_source"]
+        a2["live_updated_at"] = a.get("live_updated_at")
+        if only_available_now and not a2["available_now"]:
+            continue
+        enriched.append(a2)
+    enriched.sort(key=lambda x: x["distance_km"])
+    return {"artisans": enriched[:limit], "radius_km": radius, "total": len(enriched)}
+
+
+# Instant intervention flow
+@api_router.post("/interventions/request")
+async def request_intervention(data: InterventionRequestInput, user=Depends(get_current_user)):
+    artisan = await db.artisan_profiles.find_one({"artisan_id": data.artisan_id})
+    if not artisan:
+        raise HTTPException(status_code=404, detail="Artisan introuvable")
+    iv_id = new_id("iv")
+    doc = {
+        "intervention_id": iv_id,
+        "client_id": user["user_id"],
+        "client_name": user.get("name", "Client"),
+        "artisan_id": data.artisan_id,
+        "artisan_user_id": artisan.get("user_id"),
+        "description": data.description[:800],
+        "lat": data.lat,
+        "lng": data.lng,
+        "trade": data.trade or artisan.get("trade"),
+        "urgency": data.urgency,
+        "price_estimate_min": data.price_estimate_min,
+        "price_estimate_max": data.price_estimate_max,
+        "status": "pending",
+        "created_at": now_utc().isoformat(),
+    }
+    await db.interventions.insert_one(doc)
+    doc.pop("_id", None)
+    return doc
+
+
+@api_router.get("/interventions/mine")
+async def my_interventions(user=Depends(get_current_user)):
+    if user.get("role") == "artisan":
+        profile = await db.artisan_profiles.find_one({"user_id": user["user_id"]})
+        aid = profile.get("artisan_id") if profile else None
+        cursor = db.interventions.find({"artisan_id": aid}, {"_id": 0}).sort("created_at", -1).limit(50)
+    else:
+        cursor = db.interventions.find({"client_id": user["user_id"]}, {"_id": 0}).sort("created_at", -1).limit(50)
+    return await cursor.to_list(50)
+
+
+@api_router.get("/interventions/{iv_id}")
+async def get_intervention(iv_id: str, user=Depends(get_current_user)):
+    iv = await db.interventions.find_one({"intervention_id": iv_id}, {"_id": 0})
+    if not iv:
+        raise HTTPException(status_code=404, detail="Introuvable")
+    if user["user_id"] not in (iv.get("client_id"), iv.get("artisan_user_id")):
+        raise HTTPException(status_code=403, detail="Accès refusé")
+    return iv
+
+
+@api_router.post("/interventions/{iv_id}/accept")
+async def accept_intervention(iv_id: str, user=Depends(get_current_user)):
+    iv = await db.interventions.find_one({"intervention_id": iv_id})
+    if not iv:
+        raise HTTPException(status_code=404, detail="Introuvable")
+    if iv.get("artisan_user_id") != user["user_id"]:
+        raise HTTPException(status_code=403, detail="Réservé à l'artisan concerné")
+    await db.interventions.update_one(
+        {"intervention_id": iv_id},
+        {"$set": {"status": "accepted", "accepted_at": now_utc().isoformat()}},
+    )
+    return {"ok": True, "status": "accepted"}
+
+
+@api_router.post("/interventions/{iv_id}/refuse")
+async def refuse_intervention(iv_id: str, data: InterventionActionInput, user=Depends(get_current_user)):
+    iv = await db.interventions.find_one({"intervention_id": iv_id})
+    if not iv:
+        raise HTTPException(status_code=404, detail="Introuvable")
+    if iv.get("artisan_user_id") != user["user_id"]:
+        raise HTTPException(status_code=403, detail="Réservé à l'artisan concerné")
+    await db.interventions.update_one(
+        {"intervention_id": iv_id},
+        {"$set": {"status": "refused", "refused_at": now_utc().isoformat(), "refuse_reason": data.reason}},
+    )
+    return {"ok": True, "status": "refused"}
+
+
+@api_router.post("/interventions/{iv_id}/cancel")
+async def cancel_intervention(iv_id: str, user=Depends(get_current_user)):
+    iv = await db.interventions.find_one({"intervention_id": iv_id})
+    if not iv:
+        raise HTTPException(status_code=404, detail="Introuvable")
+    if iv.get("client_id") != user["user_id"]:
+        raise HTTPException(status_code=403, detail="Réservé au client")
+    await db.interventions.update_one(
+        {"intervention_id": iv_id},
+        {"$set": {"status": "cancelled", "cancelled_at": now_utc().isoformat()}},
+    )
+    return {"ok": True, "status": "cancelled"}
+
+
+# ----- Manual slots for artisan -----
+@api_router.post("/artisans/me/slots")
+async def create_slot(data: SlotInput, user=Depends(get_current_user)):
+    if user.get("role") != "artisan":
+        raise HTTPException(status_code=403, detail="Réservé aux artisans")
+    profile = await db.artisan_profiles.find_one({"user_id": user["user_id"]})
+    if not profile:
+        raise HTTPException(status_code=404, detail="Créez d'abord votre profil")
+    slot_id = new_id("slot")
+    doc = {
+        "slot_id": slot_id,
+        "artisan_id": profile["artisan_id"],
+        "date": data.date,
+        "start_time": data.start_time,
+        "duration_min": data.duration_min,
+        "recurring": data.recurring,
+        "booked": False,
+        "created_at": now_utc().isoformat(),
+    }
+    await db.artisan_slots.insert_one(doc)
+    doc.pop("_id", None)
+    return doc
+
+
+@api_router.get("/artisans/me/slots")
+async def list_my_slots(user=Depends(get_current_user)):
+    if user.get("role") != "artisan":
+        raise HTTPException(status_code=403, detail="Réservé aux artisans")
+    profile = await db.artisan_profiles.find_one({"user_id": user["user_id"]})
+    if not profile:
+        return {"slots": []}
+    cursor = db.artisan_slots.find({"artisan_id": profile["artisan_id"]}, {"_id": 0}).sort("date", 1)
+    slots = await cursor.to_list(500)
+    return {"slots": slots}
+
+
+@api_router.delete("/artisans/me/slots/{slot_id}")
+async def delete_slot(slot_id: str, user=Depends(get_current_user)):
+    if user.get("role") != "artisan":
+        raise HTTPException(status_code=403, detail="Réservé aux artisans")
+    profile = await db.artisan_profiles.find_one({"user_id": user["user_id"]})
+    result = await db.artisan_slots.delete_one({
+        "slot_id": slot_id,
+        "artisan_id": profile.get("artisan_id") if profile else None,
+    })
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Créneau introuvable")
+    return {"ok": True}
+
+
+@api_router.get("/artisans/{artisan_id}/slots")
+async def list_artisan_slots(artisan_id: str):
+    today = now_utc().date().isoformat()
+    cursor = db.artisan_slots.find(
+        {"artisan_id": artisan_id, "booked": False, "date": {"$gte": today}},
+        {"_id": 0}
+    ).sort("date", 1)
+    slots = await cursor.to_list(200)
+    return {"slots": slots}
+
+
+# ----- Calendar OAuth (architecture stubs — real Google/Outlook to be added) -----
+@api_router.get("/calendar/oauth/status")
+async def calendar_oauth_status(user=Depends(get_current_user)):
+    profile = await db.artisan_profiles.find_one({"user_id": user["user_id"]}, {"_id": 0}) or {}
+    return {
+        "connected": bool(profile.get("calendar_connected")),
+        "provider": profile.get("calendar_provider"),
+        "note": "Google/Outlook OAuth réel disponible dans un prochain sprint. Actuellement en mode démo/manuel.",
+    }
 
 
 app.include_router(api_router)
