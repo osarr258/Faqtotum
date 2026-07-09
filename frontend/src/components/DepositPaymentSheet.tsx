@@ -34,9 +34,10 @@ type Props = {
   onCancel: () => void;
   artisanName?: string;
   visible: boolean;
+  finalPayment?: boolean;
 };
 
-export default function DepositPaymentSheet({ interventionId, onSuccess, onCancel, artisanName, visible }: Props) {
+export default function DepositPaymentSheet({ interventionId, onSuccess, onCancel, artisanName, visible, finalPayment }: Props) {
   const [amount, setAmount] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
   const [processing, setProcessing] = useState(false);
@@ -51,8 +52,11 @@ export default function DepositPaymentSheet({ interventionId, onSuccess, onCance
     setLoading(true);
     (async () => {
       try {
+        const endpoint = finalPayment
+          ? `/interventions/${interventionId}/final/create`
+          : `/interventions/${interventionId}/deposit/create`;
         const r = await api<{ client_secret: string; payment_intent_id: string; amount_cents: number; mock: boolean }>(
-          `/interventions/${interventionId}/deposit/create`,
+          endpoint,
           { method: "POST", body: {} }
         );
         clientSecretRef.current = r.client_secret;
@@ -66,7 +70,7 @@ export default function DepositPaymentSheet({ interventionId, onSuccess, onCance
         setLoading(false);
       }
     })();
-  }, [visible, interventionId]);
+  }, [visible, interventionId, finalPayment]);
 
   const confirmMock = async () => {
     // Mock flow: simulate 1.5s processing, then hit confirm endpoint
@@ -74,10 +78,10 @@ export default function DepositPaymentSheet({ interventionId, onSuccess, onCance
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy).catch(() => {});
     await new Promise((r) => setTimeout(r, 1400));
     try {
-      await api(`/interventions/${interventionId}/deposit/confirm`, {
-        method: "POST",
-        body: { payment_intent_id: piIdRef.current },
-      });
+      const endpoint = finalPayment
+        ? `/interventions/${interventionId}/final/confirm`
+        : `/interventions/${interventionId}/deposit/confirm`;
+      await api(endpoint, { method: "POST", body: { payment_intent_id: piIdRef.current } });
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
       onSuccess();
     } catch (e: any) {
@@ -110,10 +114,10 @@ export default function DepositPaymentSheet({ interventionId, onSuccess, onCance
         throw new Error(presentRes.error.message);
       }
       // Success
-      await api(`/interventions/${interventionId}/deposit/confirm`, {
-        method: "POST",
-        body: { payment_intent_id: piIdRef.current },
-      });
+      const endpoint = finalPayment
+        ? `/interventions/${interventionId}/final/confirm`
+        : `/interventions/${interventionId}/deposit/confirm`;
+      await api(endpoint, { method: "POST", body: { payment_intent_id: piIdRef.current } });
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
       onSuccess();
     } catch (e: any) {

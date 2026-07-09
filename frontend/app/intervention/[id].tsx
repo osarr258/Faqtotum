@@ -29,7 +29,7 @@ type Intervention = {
   intervention_id: string;
   artisan_id: string;
   description: string;
-  status: "pending" | "accepted" | "refused" | "cancelled" | "confirmed";
+  status: "pending" | "accepted" | "refused" | "cancelled" | "confirmed" | "in_progress" | "awaiting_final_payment" | "awaiting_validation" | "completed";
   created_at: string;
   accepted_at?: string;
   refused_at?: string;
@@ -38,6 +38,11 @@ type Intervention = {
   urgency?: string;
   deposit_status?: "pending" | "paid";
   deposit_amount_cents?: number;
+  total_amount_cents?: number;
+  balance_cents?: number;
+  final_status?: string;
+  commission_cents?: number;
+  net_paid_cents?: number;
 };
 
 function PulseRing() {
@@ -123,16 +128,29 @@ export default function InterventionScreen() {
   }
 
   const needsDeposit = iv.status === "accepted" && iv.deposit_status !== "paid";
+  const needsFinal = iv.status === "awaiting_final_payment";
+  const needsValidation = iv.status === "awaiting_validation";
+
+  const validateWork = async () => {
+    try {
+      await api(`/interventions/${iv.intervention_id}/validate`, { method: "POST" });
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
+      load();
+    } catch (e: any) { Alert.alert("Erreur", e?.message); }
+  };
+
   const stateVisual = {
     pending: { icon: "time-outline", color: COLORS.accent, title: "En attente de réponse", sub: "L'artisan a été notifié — il répond en général en moins de 5 minutes." },
     accepted: {
       icon: "wallet-outline", color: COLORS.accent,
       title: "Demande acceptée !",
-      sub: needsDeposit
-        ? "Un petit acompte est requis pour confirmer et déclencher l'intervention."
-        : "L'artisan est en route. Il vous contactera très bientôt.",
+      sub: needsDeposit ? "Un petit acompte est requis pour confirmer et déclencher l'intervention." : "L'artisan est en route.",
     },
     confirmed: { icon: "checkmark-circle", color: COLORS.success, title: "Intervention confirmée", sub: "L'artisan est en route. Il vous contactera très bientôt." },
+    in_progress: { icon: "construct", color: COLORS.accent, title: "Intervention en cours", sub: "L'artisan travaille sur votre demande." },
+    awaiting_final_payment: { icon: "cash-outline", color: COLORS.accent, title: "Paiement du solde", sub: `Solde à régler : ${(iv.balance_cents ?? 0) / 100} €` },
+    awaiting_validation: { icon: "checkmark-done-outline", color: COLORS.accent, title: "Validez le travail", sub: "L'artisan a terminé — validez pour libérer le paiement." },
+    completed: { icon: "trophy", color: COLORS.success, title: "Intervention terminée", sub: iv.net_paid_cents ? `Paiement libéré vers l'artisan (${(iv.net_paid_cents / 100).toFixed(2)} € net).` : "Merci pour votre confiance." },
     refused: { icon: "close-circle", color: COLORS.error, title: "Demande refusée", sub: iv.refuse_reason || "L'artisan n'est pas disponible pour le moment." },
     cancelled: { icon: "ban-outline", color: COLORS.muted, title: "Demande annulée", sub: "Vous avez annulé cette demande." },
   }[iv.status as keyof any] as { icon: string; color: string; title: string; sub: string };
@@ -197,7 +215,32 @@ export default function InterventionScreen() {
             </Txt>
           </Pressable>
         )}
-        {(iv.status === "refused" || iv.status === "cancelled") && (
+        {needsFinal && (
+          <Pressable
+            testID="pay-final-btn"
+            onPress={() => {
+              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
+              setShowPay(true);
+            }}
+            style={({ pressed }) => [styles.primary, pressed && { opacity: 0.85 }]}
+          >
+            <Ionicons name="cash" size={18} color={COLORS.bg} />
+            <Txt weight="bold" style={{ color: COLORS.bg, marginLeft: 8 }}>
+              Payer le solde ({((iv.balance_cents ?? 0) / 100).toFixed(2)} €)
+            </Txt>
+          </Pressable>
+        )}
+        {needsValidation && (
+          <Pressable
+            testID="validate-btn"
+            onPress={validateWork}
+            style={({ pressed }) => [styles.primary, pressed && { opacity: 0.85 }]}
+          >
+            <Ionicons name="checkmark-done" size={18} color={COLORS.bg} />
+            <Txt weight="bold" style={{ color: COLORS.bg, marginLeft: 8 }}>Valider & libérer le paiement</Txt>
+          </Pressable>
+        )}
+        {(iv.status === "refused" || iv.status === "cancelled" || iv.status === "completed") && (
           <Pressable
             testID="retry"
             onPress={() => router.replace("/")}
@@ -225,6 +268,7 @@ export default function InterventionScreen() {
           load();
         }}
         onCancel={() => setShowPay(false)}
+        finalPayment={needsFinal}
       />
     </View>
   );

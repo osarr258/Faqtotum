@@ -4189,6 +4189,7 @@ async def confirm_deposit(iv_id: str, data: DepositConfirmInput, user=Depends(ge
             "deposit_status": "paid",
             "deposit_paid_at": now_utc().isoformat(),
             "status": "confirmed",
+            "escrow_deposit_state": "held",
         }},
     )
     await security.audit_log(
@@ -4197,6 +4198,221 @@ async def confirm_deposit(iv_id: str, data: DepositConfirmInput, user=Depends(ge
         target=iv_id, metadata={"amount_cents": iv.get("deposit_amount_cents")}, severity="critical",
     )
     return {"ok": True, "status": "confirmed"}
+
+
+# ---------- Intervention lifecycle & final payment (Stripe Connect flow) ----------
+class InterventionFinalInput(BaseModel):
+    total_amount_cents: int
+
+
+@api_router.post("/interventions/{iv_id}/start")
+async def start_intervention(iv_id: str, user=Depends(get_current_user)):
+    """Artisan marks intervention as in progress (arrived on site)."""
+    iv = await db.interventions.find_one({"intervention_id": iv_id})
+    if not iv:
+        raise HTTPException(status_code=404, detail="Introuvable")
+    if iv.get("artisan_user_id") != user["user_id"]:
+        raise HTTPException(status_code=403, detail="Réservé à l'artisan")
+    if iv.get("status") != "confirmed":
+        raise HTTPException(status_code=400, detail="Le paiement d'acompte doit être effectué avant")
+    await db.interventions.update_one(
+        {"intervention_id": iv_id},
+        {"$set": {"status": "in_progress", "started_at": now_utc().isoformat()}},
+    )
+    await security.audit_log(db, action="intervention.started", actor_id=user["user_id"], target=iv_id, severity="info")
+    return {"ok": True, "status": "in_progress"}
+
+
+@api_router.post("/interventions/{iv_id}/finish")
+async def finish_intervention(iv_id: str, data: InterventionFinalInput, user=Depends(get_current_user)):
+    """Artisan marks intervention as finished with the final total amount.
+    Client will then be prompted to pay the balance (final - deposit).
+    """
+    iv = await db.interventions.find_one({"intervention_id": iv_id})
+    if not iv:
+        raise HTTPException(status_code=404, detail="Introuvable")
+    if iv.get("artisan_user_id") != user["user_id"]:
+        raise HTTPException(status_code=403, detail="Réservé à l'artisan")
+    if iv.get("status") not in ("in_progress", "confirmed"):
+        raise HTTPException(status_code=400, detail="État invalide")
+    deposit = iv.get("deposit_amount_cents", 0)
+    if data.total_amount_cents < deposit:
+        raise HTTPException(status_code=400, detail="Le total doit couvrir au moins l'acompte")
+    balance = data.total_amount_cents - deposit
+    await db.interventions.update_one(
+        {"intervention_id": iv_id},
+        {"$set": {
+            "status": "awaiting_final_payment" if balance > 0 else "awaiting_validation",
+            "total_amount_cents": data.total_amount_cents,
+            "balance_cents": balance,
+            "finished_at": now_utc().isoformat(),
+        }},
+    )
+    await security.audit_log(
+        db, action="intervention.finished",
+        actor_id=user["user_id"], target=iv_id,
+        metadata={"total_cents": data.total_amount_cents, "balance_cents": balance}, severity="info",
+    )
+    return {"ok": True, "total_cents": data.total_amount_cents, "balance_cents": balance}
+
+
+@api_router.post("/interventions/{iv_id}/final/create")
+async def create_final_payment(iv_id: str, user=Depends(get_current_user)):
+    """Create a PaymentIntent for the balance (total - deposit)."""
+    iv = await db.interventions.find_one({"intervention_id": iv_id})
+    if not iv:
+        raise HTTPException(status_code=404, detail="Introuvable")
+    if iv.get("client_id") != user["user_id"]:
+        raise HTTPException(status_code=403, detail="Réservé au client")
+    if iv.get("status") != "awaiting_final_payment":
+        raise HTTPException(status_code=400, detail="État invalide")
+    balance = iv.get("balance_cents", 0)
+    if balance <= 0:
+        return {"already_paid": True}
+    pi = payments.create_payment_intent(
+        amount_cents=balance,
+        currency="eur",
+        metadata={"intervention_id": iv_id, "type": "final", "artisan_id": iv.get("artisan_id", "")},
+        customer_email=user.get("email"),
+    )
+    await db.interventions.update_one(
+        {"intervention_id": iv_id},
+        {"$set": {"final_payment_intent_id": pi["id"], "final_status": "pending"}},
+    )
+    return {
+        "client_secret": pi.get("client_secret"),
+        "payment_intent_id": pi["id"],
+        "amount_cents": balance,
+        "currency": "eur",
+        "mock": pi.get("client_secret", "").endswith("_secret_mock"),
+    }
+
+
+@api_router.post("/interventions/{iv_id}/final/confirm")
+async def confirm_final_payment(iv_id: str, user=Depends(get_current_user)):
+    iv = await db.interventions.find_one({"intervention_id": iv_id})
+    if not iv:
+        raise HTTPException(status_code=404, detail="Introuvable")
+    if iv.get("client_id") != user["user_id"]:
+        raise HTTPException(status_code=403, detail="Réservé au client")
+    await db.interventions.update_one(
+        {"intervention_id": iv_id},
+        {"$set": {
+            "final_status": "paid",
+            "final_paid_at": now_utc().isoformat(),
+            "status": "awaiting_validation",
+        }},
+    )
+    await security.audit_log(
+        db, action="intervention.final_paid",
+        actor_id=user["user_id"], target=iv_id,
+        metadata={"amount_cents": iv.get("balance_cents")}, severity="critical",
+    )
+    return {"ok": True, "status": "awaiting_validation"}
+
+
+@api_router.post("/interventions/{iv_id}/validate")
+async def validate_intervention(iv_id: str, user=Depends(get_current_user)):
+    """Client validates the completed work → escrow is released to artisan via Stripe Connect Transfer."""
+    iv = await db.interventions.find_one({"intervention_id": iv_id})
+    if not iv:
+        raise HTTPException(status_code=404, detail="Introuvable")
+    if iv.get("client_id") != user["user_id"]:
+        raise HTTPException(status_code=403, detail="Réservé au client")
+    if iv.get("status") not in ("awaiting_validation", "awaiting_final_payment"):
+        raise HTTPException(status_code=400, detail="État invalide")
+
+    artisan_profile = await db.artisan_profiles.find_one({"artisan_id": iv.get("artisan_id")}, {"_id": 0}) or {}
+    connected = await db.stripe_accounts.find_one({"artisan_id": iv.get("artisan_id")}, {"_id": 0})
+    total = iv.get("total_amount_cents") or iv.get("deposit_amount_cents") or 0
+
+    result: Dict[str, Any] = {"ok": True, "status": "completed", "total_cents": total}
+
+    if connected and total > 0:
+        bps = await payments.resolve_commission_bps(db, artisan_profile)
+        fee = payments.commission_amount(total, bps)
+        net = total - fee
+        transfer = payments.create_transfer(
+            amount_cents=net,
+            currency="eur",
+            destination=connected["stripe_account_id"],
+            transfer_group=iv_id,
+            metadata={"intervention_id": iv_id, "artisan_id": iv.get("artisan_id", "")},
+        )
+        await db.transfers.insert_one({
+            "transfer_id": new_id("tr"),
+            "stripe_transfer_id": transfer["id"],
+            "intervention_id": iv_id,
+            "artisan_id": iv.get("artisan_id"),
+            "gross_cents": total,
+            "commission_bps": bps,
+            "commission_cents": fee,
+            "net_cents": net,
+            "created_at": now_utc().isoformat(),
+        })
+        result.update({"commission_cents": fee, "net_cents": net, "transfer_id": transfer["id"], "commission_bps": bps})
+    else:
+        result.update({"note": "Aucun transfert Stripe Connect (artisan non connecté ou montant nul)"})
+
+    await db.interventions.update_one(
+        {"intervention_id": iv_id},
+        {"$set": {
+            "status": "completed",
+            "completed_at": now_utc().isoformat(),
+            "escrow_deposit_state": "released",
+            **({"commission_cents": result.get("commission_cents"), "net_paid_cents": result.get("net_cents")} if "net_cents" in result else {}),
+        }},
+    )
+    await security.audit_log(
+        db, action="intervention.validated_and_transferred",
+        actor_id=user["user_id"], target=iv_id,
+        metadata={k: v for k, v in result.items() if k != "ok"}, severity="critical",
+    )
+    return result
+
+
+@api_router.get("/interventions/{iv_id}/payment-summary")
+async def intervention_payment_summary(iv_id: str, user=Depends(get_current_user)):
+    iv = await db.interventions.find_one({"intervention_id": iv_id}, {"_id": 0})
+    if not iv:
+        raise HTTPException(status_code=404, detail="Introuvable")
+    if user["user_id"] not in (iv.get("client_id"), iv.get("artisan_user_id")):
+        raise HTTPException(status_code=403, detail="Accès refusé")
+    deposit = iv.get("deposit_amount_cents", 0)
+    total = iv.get("total_amount_cents", 0)
+    balance = iv.get("balance_cents", 0)
+    return {
+        "deposit_cents": deposit,
+        "total_cents": total,
+        "balance_cents": balance,
+        "deposit_status": iv.get("deposit_status"),
+        "final_status": iv.get("final_status"),
+        "status": iv.get("status"),
+        "commission_cents": iv.get("commission_cents"),
+        "net_paid_cents": iv.get("net_paid_cents"),
+    }
+
+
+# ---------- Artisan earnings summary (Stripe Connect payouts) ----------
+@api_router.get("/artisans/me/earnings")
+async def artisan_earnings(user=Depends(get_current_user)):
+    if user.get("role") != "artisan":
+        raise HTTPException(status_code=403, detail="Réservé aux artisans")
+    profile = await db.artisan_profiles.find_one({"user_id": user["user_id"]}, {"_id": 0})
+    if not profile:
+        return {"total_net": 0, "total_gross": 0, "total_commission": 0, "transfers": []}
+    cursor = db.transfers.find({"artisan_id": profile["artisan_id"]}, {"_id": 0}).sort("created_at", -1).limit(50)
+    transfers = await cursor.to_list(50)
+    total_gross = sum(t.get("gross_cents", 0) for t in transfers)
+    total_net = sum(t.get("net_cents", 0) for t in transfers)
+    total_commission = sum(t.get("commission_cents", 0) for t in transfers)
+    return {
+        "total_gross": total_gross,
+        "total_net": total_net,
+        "total_commission": total_commission,
+        "transfers_count": len(transfers),
+        "transfers": transfers[:10],
+    }
 
 
 app.include_router(api_router)

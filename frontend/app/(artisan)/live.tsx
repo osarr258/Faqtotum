@@ -3,7 +3,7 @@
  */
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { View, StyleSheet, ScrollView, Pressable, Switch, Alert, ActivityIndicator, TextInput } from "react-native";
-import { useFocusEffect } from "expo-router";
+import { useFocusEffect, useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import * as Location from "expo-location";
 import * as Haptics from "expo-haptics";
@@ -35,11 +35,11 @@ type Intervention = {
   price_estimate_min?: number;
   price_estimate_max?: number;
 };
-
 type Slot = { slot_id: string; date: string; start_time: string; duration_min: number };
 
 export default function ArtisanLive() {
   const insets = useSafeAreaInsets();
+  const router = useRouter();
   const [availableNow, setAvailableNow] = useState(false);
   const [busy, setBusy] = useState(false);
   const [interventions, setInterventions] = useState<Intervention[]>([]);
@@ -137,6 +137,29 @@ export default function ArtisanLive() {
   };
 
   const pending = interventions.filter((i) => i.status === "pending");
+  const active = interventions.filter((i) => i.status === "confirmed" || i.status === "in_progress");
+
+  const startWork = async (iv: Intervention) => {
+    try { await api(`/interventions/${iv.intervention_id}/start`, { method: "POST" }); load(); }
+    catch (e: any) { Alert.alert("Erreur", e?.message); }
+  };
+  const finishWork = async (iv: Intervention) => {
+    Alert.prompt?.("Montant total (€)", "Entrez le montant total à facturer :", async (val) => {
+      const total = parseFloat(String(val || "0"));
+      if (!total || total <= 0) return;
+      try {
+        await api(`/interventions/${iv.intervention_id}/finish`, { method: "POST", body: { total_amount_cents: Math.round(total * 100) } });
+        load();
+      } catch (e: any) { Alert.alert("Erreur", e?.message); }
+    });
+    if (!Alert.prompt) {
+      // Android fallback — use default 250€
+      try {
+        await api(`/interventions/${iv.intervention_id}/finish`, { method: "POST", body: { total_amount_cents: 25000 } });
+        load();
+      } catch (e: any) { Alert.alert("Erreur", e?.message); }
+    }
+  };
 
   if (loading) {
     return <View style={styles.container}><ActivityIndicator color={COLORS.accent} style={{ marginTop: 60 }} /></View>;
@@ -176,6 +199,42 @@ export default function ArtisanLive() {
           thumbColor={COLORS.white}
         />
       </View>
+
+      {/* Active interventions */}
+      {active.length > 0 && (
+        <View style={{ marginTop: 20 }}>
+          <Txt weight="bold" style={styles.sectionH}>Interventions en cours ({active.length})</Txt>
+          {active.map((iv) => (
+            <View key={iv.intervention_id} style={styles.ivCard}>
+              <View style={styles.ivRow}>
+                <View style={styles.ivIcon}>
+                  <Ionicons name={iv.status === "in_progress" ? "construct" : "checkmark-circle"} size={16} color={COLORS.accent} />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Txt weight="bold" style={{ color: COLORS.white }}>{iv.client_name || "Client"}</Txt>
+                  <Txt size="sm" style={{ color: COLORS.muted }}>
+                    {iv.status === "confirmed" ? "Acompte payé — prêt à démarrer" : "En cours"}
+                  </Txt>
+                </View>
+              </View>
+              <View style={styles.ivActions}>
+                {iv.status === "confirmed" && (
+                  <Pressable onPress={() => startWork(iv)} style={({ pressed }) => [styles.btnAccept, pressed && { opacity: 0.85 }]}>
+                    <Ionicons name="play" size={14} color={COLORS.bg} />
+                    <Txt weight="bold" style={{ color: COLORS.bg, marginLeft: 6 }}>Démarrer</Txt>
+                  </Pressable>
+                )}
+                {iv.status === "in_progress" && (
+                  <Pressable onPress={() => finishWork(iv)} style={({ pressed }) => [styles.btnAccept, pressed && { opacity: 0.85 }]}>
+                    <Ionicons name="checkmark-done" size={14} color={COLORS.bg} />
+                    <Txt weight="bold" style={{ color: COLORS.bg, marginLeft: 6 }}>Terminer</Txt>
+                  </Pressable>
+                )}
+              </View>
+            </View>
+          ))}
+        </View>
+      )}
 
       {/* Pending interventions */}
       {pending.length > 0 && (
@@ -224,10 +283,30 @@ export default function ArtisanLive() {
         </View>
       )}
 
+      {/* Stripe Connect card */}
+      <View style={{ marginTop: 24 }}>
+        <Txt weight="bold" style={styles.sectionH}>Paiements Stripe</Txt>
+        <Pressable
+          testID="stripe-connect-cta"
+          onPress={() => router.push("/connect")}
+          style={({ pressed }) => [styles.stripeCard, pressed && { opacity: 0.85 }]}
+        >
+          <View style={styles.stripeIcon}>
+            <Ionicons name="card" size={22} color={COLORS.accent} />
+          </View>
+          <View style={{ flex: 1, marginLeft: 12 }}>
+            <Txt weight="bold" style={{ color: COLORS.white }}>Connecter Stripe</Txt>
+            <Txt size="sm" style={{ color: COLORS.muted, marginTop: 2 }}>
+              Recevoir vos paiements sur votre compte bancaire
+            </Txt>
+          </View>
+          <Ionicons name="chevron-forward" size={18} color={COLORS.muted} />
+        </Pressable>
+      </View>
+
       {/* Manual slots */}
       <View style={{ marginTop: 24 }}>
-        <Txt weight="bold" style={styles.sectionH}>Mes créneaux ({slots.length})</Txt>
-        <Txt size="sm" style={{ color: COLORS.muted, paddingHorizontal: 20, marginBottom: 12 }}>
+        <Txt weight="bold" style={styles.sectionH}>Mes créneaux ({slots.length})</Txt>        <Txt size="sm" style={{ color: COLORS.muted, paddingHorizontal: 20, marginBottom: 12 }}>
           Créez vos disponibilités. Les clients pourront réserver ces créneaux.
         </Txt>
 
@@ -382,6 +461,21 @@ const styles = StyleSheet.create({
     marginTop: 10,
     paddingHorizontal: 10, paddingVertical: 6,
     borderRadius: 8,
+    borderWidth: 1, borderColor: "rgba(200,169,107,0.3)",
+  },
+  stripeCard: {
+    marginHorizontal: 20,
+    flexDirection: "row",
+    alignItems: "center",
+    padding: 16,
+    backgroundColor: COLORS.bgSoft,
+    borderRadius: 16,
+    borderWidth: 1, borderColor: COLORS.border,
+  },
+  stripeIcon: {
+    width: 44, height: 44, borderRadius: 14,
+    backgroundColor: "rgba(200,169,107,0.15)",
+    alignItems: "center", justifyContent: "center",
     borderWidth: 1, borderColor: "rgba(200,169,107,0.3)",
   },
 });

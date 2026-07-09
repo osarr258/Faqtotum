@@ -310,3 +310,38 @@ Architecture prête (endpoint `/calendar/oauth/status`, teaser UI). Vraie intég
 
 ### Note importante
 **Apple Pay et Stripe RÉEL** ne fonctionnent que sur **build natif iOS/Android**. Sur web / Expo Go, le fallback mock UI simule le paiement (bouton → confirmation backend directe après 1.4s). Une fois vraies clés Stripe fournies + app publiée, l'Apple Pay natif s'active automatiquement.
+
+## Sprint 14 — Stripe Connect Intégration Complète (LIVRÉ)
+
+### Backend — Cycle de vie intervention complet avec Connect
+- `POST /interventions/{id}/start` — artisan démarre l'intervention (status: in_progress)
+- `POST /interventions/{id}/finish` — artisan finit avec montant total → balance calculée (total - acompte)
+- `POST /interventions/{id}/final/create` — client PaymentIntent pour le solde
+- `POST /interventions/{id}/final/confirm` — client valide paiement solde → awaiting_validation
+- `POST /interventions/{id}/validate` — client valide travail → **Stripe Connect Transfer automatique** vers artisan (avec commission Auxora)
+- `GET /interventions/{id}/payment-summary` — récap paiement (acompte, solde, total, commission, net)
+- `GET /artisans/me/earnings` — dashboard revenus (total_gross, total_net, total_commission, transfers[])
+
+### Flow complet client→artisan avec commission
+1. **Acompte** (10% du prix, 15-30€) via Apple Pay/Carte — Stripe PaymentIntent → Auxora
+2. **Démarrage** artisan (start)
+3. **Finish** artisan → renseigne montant total
+4. **Solde** (total - acompte) via Apple Pay/Carte — 2ème PaymentIntent → Auxora
+5. **Validation** client → Auxora calcule commission (par défaut 10%) + **Stripe Transfer** vers compte connecté artisan du montant net
+6. Artisan voit ses gains dans `/artisans/me/earnings`
+
+### Frontend
+- **`/connect`** — Onboarding Stripe Connect premium (hero, status en temps réel, 3 étapes, mentions légales PCI-DSS/PSD2/KYC)
+- **`/connect/mock-onboarding`** — landing Stripe simulée en mode démo (transition Stripe Express)
+- **Live tab artisan** — card d'appel Stripe Connect + liste "Interventions en cours" avec CTAs Démarrer / Terminer
+- **Intervention detail (client)** — nouveaux états visuels : in_progress, awaiting_final_payment, awaiting_validation, completed avec récap net versé
+- **DepositPaymentSheet réutilisé** pour acompte ET solde (prop `finalPayment`)
+
+### Test end-to-end validé (backend)
+- Cycle complet Request → Accept → Deposit 22.50€ → Start → Finish 250€ → Final 227.50€ → Validate → **Transfer 225€ net (commission 25€)** vers artisan connecté
+- Earnings dashboard : 45 transferts cumulés, 2 454.75 € net gagnés (mock)
+
+### Mode MOCK ↔ RÉEL
+- Automatique via `STRIPE_API_KEY` dans `.env` — tant que `sk_test_emergent`, tout est simulé (avec vrais montants + flow complet)
+- Dès qu'une vraie clé Stripe est fournie, tout bascule sur des PaymentIntents et Transfers réels
+- Apple Pay natif s'active automatiquement sur build iOS après connexion réelle

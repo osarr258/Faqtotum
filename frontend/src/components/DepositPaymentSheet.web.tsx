@@ -20,9 +20,10 @@ type Props = {
   onCancel: () => void;
   artisanName?: string;
   visible: boolean;
+  finalPayment?: boolean;
 };
 
-export default function DepositPaymentSheet({ interventionId, onSuccess, onCancel, artisanName, visible }: Props) {
+export default function DepositPaymentSheet({ interventionId, onSuccess, onCancel, artisanName, visible, finalPayment }: Props) {
   const [amount, setAmount] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
   const [processing, setProcessing] = useState(false);
@@ -33,8 +34,11 @@ export default function DepositPaymentSheet({ interventionId, onSuccess, onCance
     setLoading(true);
     (async () => {
       try {
+        const endpoint = finalPayment
+          ? `/interventions/${interventionId}/final/create`
+          : `/interventions/${interventionId}/deposit/create`;
         const r = await api<{ payment_intent_id: string; amount_cents: number }>(
-          `/interventions/${interventionId}/deposit/create`,
+          endpoint,
           { method: "POST", body: {} }
         );
         piIdRef.current = r.payment_intent_id;
@@ -46,16 +50,16 @@ export default function DepositPaymentSheet({ interventionId, onSuccess, onCance
         setLoading(false);
       }
     })();
-  }, [visible, interventionId]);
+  }, [visible, interventionId, finalPayment]);
 
   const confirmPayment = async () => {
     setProcessing(true);
     await new Promise((r) => setTimeout(r, 1400));
     try {
-      await api(`/interventions/${interventionId}/deposit/confirm`, {
-        method: "POST",
-        body: { payment_intent_id: piIdRef.current },
-      });
+      const endpoint = finalPayment
+        ? `/interventions/${interventionId}/final/confirm`
+        : `/interventions/${interventionId}/deposit/confirm`;
+      await api(endpoint, { method: "POST", body: { payment_intent_id: piIdRef.current } });
       onSuccess();
     } catch (e: any) {
       Alert.alert("Erreur", e?.message);
@@ -74,8 +78,12 @@ export default function DepositPaymentSheet({ interventionId, onSuccess, onCance
               <Ionicons name="shield-checkmark" size={22} color={COLORS.accent} />
             </View>
             <View style={{ flex: 1, marginLeft: 12 }}>
-              <Txt weight="extrabold" size="lg" style={{ color: COLORS.white }}>Confirmer l&apos;intervention</Txt>
-              <Txt size="sm" style={{ color: COLORS.muted, marginTop: 2 }}>Petit acompte pour sécuriser la prise en charge</Txt>
+              <Txt weight="extrabold" size="lg" style={{ color: COLORS.white }}>
+                {finalPayment ? "Payer le solde" : "Confirmer l'intervention"}
+              </Txt>
+              <Txt size="sm" style={{ color: COLORS.muted, marginTop: 2 }}>
+                {finalPayment ? "Régler le solde final de l'intervention" : "Petit acompte pour sécuriser la prise en charge"}
+              </Txt>
             </View>
             <Pressable onPress={onCancel} hitSlop={12} style={styles.close}>
               <Ionicons name="close" size={18} color={COLORS.white} />
@@ -87,9 +95,13 @@ export default function DepositPaymentSheet({ interventionId, onSuccess, onCance
           ) : (
             <>
               <Animated.View entering={FadeIn.delay(100)} style={styles.amountCard}>
-                <Txt size="sm" style={{ color: COLORS.muted, textAlign: "center" }}>Montant de l&apos;acompte</Txt>
+                <Txt size="sm" style={{ color: COLORS.muted, textAlign: "center" }}>
+                  {finalPayment ? "Montant du solde" : "Montant de l'acompte"}
+                </Txt>
                 <Txt weight="extrabold" style={styles.amount}>{amountEur} €</Txt>
-                <Txt size="sm" style={{ color: COLORS.muted, textAlign: "center", marginTop: 4 }}>Déduit de la facture finale</Txt>
+                <Txt size="sm" style={{ color: COLORS.muted, textAlign: "center", marginTop: 4 }}>
+                  {finalPayment ? "Libère le paiement vers l'artisan après validation" : "Déduit de la facture finale"}
+                </Txt>
               </Animated.View>
 
               {artisanName && (
