@@ -46,7 +46,14 @@
           "backgroundColor": "#000000"
         }
       ],
-      "expo-audio"
+      "expo-audio",
+      [
+        "@stripe/stripe-react-native",
+        {
+          "merchantIdentifier": "merchant.com.auxora.app",
+          "enableGooglePay": false
+        }
+      ]
     ],
     "experiments": {
       "typedRoutes": true

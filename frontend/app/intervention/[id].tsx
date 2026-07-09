@@ -11,6 +11,7 @@ import Animated, { FadeIn, FadeInUp, useSharedValue, useAnimatedStyle, withRepea
 import * as Haptics from "expo-haptics";
 import { Txt } from "@/src/components/ui";
 import { api } from "@/src/api";
+import DepositPaymentSheet from "@/src/components/DepositPaymentSheet";
 
 const COLORS = {
   bg: "#0B0B0B",
@@ -28,13 +29,15 @@ type Intervention = {
   intervention_id: string;
   artisan_id: string;
   description: string;
-  status: "pending" | "accepted" | "refused" | "cancelled";
+  status: "pending" | "accepted" | "refused" | "cancelled" | "confirmed";
   created_at: string;
   accepted_at?: string;
   refused_at?: string;
   refuse_reason?: string;
   trade?: string;
   urgency?: string;
+  deposit_status?: "pending" | "paid";
+  deposit_amount_cents?: number;
 };
 
 function PulseRing() {
@@ -55,6 +58,7 @@ export default function InterventionScreen() {
   const params = useLocalSearchParams<{ id: string }>();
   const [iv, setIv] = useState<Intervention | null>(null);
   const [loading, setLoading] = useState(true);
+  const [showPay, setShowPay] = useState(false);
   const pollRef = useRef<any>(null);
 
   const load = useCallback(async () => {
@@ -78,7 +82,7 @@ export default function InterventionScreen() {
     pollRef.current = setInterval(() => {
       // Keep polling only while pending
       setIv((cur) => {
-        if (cur && (cur.status === "accepted" || cur.status === "refused" || cur.status === "cancelled")) {
+        if (cur && (cur.status === "confirmed" || cur.status === "refused" || cur.status === "cancelled")) {
           if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
         } else {
           load();
@@ -118,12 +122,20 @@ export default function InterventionScreen() {
     );
   }
 
+  const needsDeposit = iv.status === "accepted" && iv.deposit_status !== "paid";
   const stateVisual = {
     pending: { icon: "time-outline", color: COLORS.accent, title: "En attente de réponse", sub: "L'artisan a été notifié — il répond en général en moins de 5 minutes." },
-    accepted: { icon: "checkmark-circle", color: COLORS.success, title: "Demande acceptée !", sub: "L'artisan est en route. Il vous contactera très bientôt." },
+    accepted: {
+      icon: "wallet-outline", color: COLORS.accent,
+      title: "Demande acceptée !",
+      sub: needsDeposit
+        ? "Un petit acompte est requis pour confirmer et déclencher l'intervention."
+        : "L'artisan est en route. Il vous contactera très bientôt.",
+    },
+    confirmed: { icon: "checkmark-circle", color: COLORS.success, title: "Intervention confirmée", sub: "L'artisan est en route. Il vous contactera très bientôt." },
     refused: { icon: "close-circle", color: COLORS.error, title: "Demande refusée", sub: iv.refuse_reason || "L'artisan n'est pas disponible pour le moment." },
     cancelled: { icon: "ban-outline", color: COLORS.muted, title: "Demande annulée", sub: "Vous avez annulé cette demande." },
-  }[iv.status];
+  }[iv.status as keyof any] as { icon: string; color: string; title: string; sub: string };
 
   return (
     <View style={[styles.container, { paddingTop: insets.top + 12, paddingBottom: insets.bottom + 24 }]}>
@@ -170,6 +182,21 @@ export default function InterventionScreen() {
             <Txt weight="bold" style={{ color: COLORS.error }}>Annuler la demande</Txt>
           </Pressable>
         )}
+        {needsDeposit && (
+          <Pressable
+            testID="pay-deposit-btn"
+            onPress={() => {
+              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
+              setShowPay(true);
+            }}
+            style={({ pressed }) => [styles.primary, pressed && { opacity: 0.85 }]}
+          >
+            <Ionicons name="wallet" size={18} color={COLORS.bg} />
+            <Txt weight="bold" style={{ color: COLORS.bg, marginLeft: 8 }}>
+              Confirmer & payer l&apos;acompte
+            </Txt>
+          </Pressable>
+        )}
         {(iv.status === "refused" || iv.status === "cancelled") && (
           <Pressable
             testID="retry"
@@ -179,7 +206,7 @@ export default function InterventionScreen() {
             <Txt weight="bold" style={{ color: COLORS.bg }}>Retour à l&apos;accueil</Txt>
           </Pressable>
         )}
-        {iv.status === "accepted" && (
+        {iv.status === "confirmed" && (
           <Pressable
             testID="view-pro"
             onPress={() => router.push({ pathname: "/artisan/[id]", params: { id: iv.artisan_id } })}
@@ -189,6 +216,16 @@ export default function InterventionScreen() {
           </Pressable>
         )}
       </View>
+
+      <DepositPaymentSheet
+        visible={showPay}
+        interventionId={iv.intervention_id}
+        onSuccess={() => {
+          setShowPay(false);
+          load();
+        }}
+        onCancel={() => setShowPay(false)}
+      />
     </View>
   );
 }

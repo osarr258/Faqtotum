@@ -11,6 +11,7 @@ import { useFonts } from "expo-font";
 import { useIconFonts } from "@/src/hooks/use-icon-fonts";
 import { AuthProvider, useAuth } from "@/src/context/AuthContext";
 import LockScreen from "@/src/components/LockScreen";
+import StripeWrapper from "@/src/components/StripeWrapper";
 
 LogBox.ignoreAllLogs(true);
 SplashScreen.preventAutoHideAsync();
@@ -46,10 +47,12 @@ export default function RootLayout() {
     <GestureHandlerRootView style={{ flex: 1 }}>
       <KeyboardProvider>
         <SafeAreaProvider>
-          <AuthProvider>
-            <StatusBar style="light" />
-            <GateContent />
-          </AuthProvider>
+          <StripeWrapper>
+            <AuthProvider>
+              <StatusBar style="light" />
+              <GateContent />
+            </AuthProvider>
+          </StripeWrapper>
         </SafeAreaProvider>
       </KeyboardProvider>
     </GestureHandlerRootView>

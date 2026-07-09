@@ -277,3 +277,36 @@ Real-time via **polling** (pas de WebSocket) — plus simple à shipper, robuste
 
 ### OAuth Google/Outlook Calendar
 Architecture prête (endpoint `/calendar/oauth/status`, teaser UI). Vraie intégration Google Cloud + client_id/secret prévue pour un prochain sprint dédié.
+
+## Sprint 13 — Acompte Stripe + Apple Pay + Card (LIVRÉ)
+
+### Backend
+- `POST /interventions/{id}/deposit/create` — crée un PaymentIntent Stripe (10% du prix estimé, min 15€, max 30€, EUR)
+- `POST /interventions/{id}/deposit/confirm` — confirme le paiement (client) → intervention passe à status "confirmed"
+- Réutilise `services/payments.create_payment_intent()` avec `automatic_payment_methods` (inclut Apple Pay + Card en mode réel)
+- Mode mock actif tant que `STRIPE_API_KEY = sk_test_emergent` — passe en réel automatiquement quand vraies clés fournies
+- Audit logs sur `intervention.deposit_created` et `intervention.deposit_paid`
+
+### Frontend
+- Package `@stripe/stripe-react-native@0.50.3` installé
+- Config plugin app.json : `merchantIdentifier: merchant.com.auxora.app`
+- Env : `EXPO_PUBLIC_STRIPE_PUBLISHABLE_KEY=pk_test_emergent`
+- **StripeWrapper** avec fallback web (StripeWrapper.web.tsx no-op)
+- **DepositPaymentSheet** — modal bottom sheet premium :
+  - Icône shield doré + titre "Confirmer l'intervention"
+  - Card montant en 44pt (ex: 22.50 €) avec "Déduit de la facture finale"
+  - Bouton **Apple Pay** noir (iOS uniquement) avec logo Apple
+  - Bouton **Payer par carte** doré (fallback web + tous devices)
+  - Notice paiement sécurisé Stripe + politique de remboursement
+- Fallback web `DepositPaymentSheet.web.tsx` — même UI sans SDK Stripe (évite les erreurs Metro sur les modules natifs)
+
+### Flow complet
+1. Client demande intervention immédiate
+2. Artisan accepte → status "accepted" + `deposit_status: null`
+3. Client voit "Demande acceptée !" avec CTA doré "Confirmer & payer l'acompte"
+4. Modal Payment Sheet → Apple Pay OR Card
+5. Backend confirm → status "confirmed" + `deposit_status: paid`
+6. Client voit "Intervention confirmée" avec icône check verte
+
+### Note importante
+**Apple Pay et Stripe RÉEL** ne fonctionnent que sur **build natif iOS/Android**. Sur web / Expo Go, le fallback mock UI simule le paiement (bouton → confirmation backend directe après 1.4s). Une fois vraies clés Stripe fournies + app publiée, l'Apple Pay natif s'active automatiquement.

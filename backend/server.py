@@ -4107,6 +4107,98 @@ async def calendar_oauth_status(user=Depends(get_current_user)):
     }
 
 
+# ----- Intervention Deposit (Stripe: Apple Pay + Card) -----
+DEPOSIT_MIN_CENTS = 1500   # 15 €
+DEPOSIT_MAX_CENTS = 3000   # 30 €
+DEPOSIT_PERCENT = 0.10     # 10% of estimated price
+
+class DepositIntentInput(BaseModel):
+    payment_method: Optional[str] = None  # "card" | "apple_pay" | None
+
+class DepositConfirmInput(BaseModel):
+    payment_intent_id: Optional[str] = None
+
+
+def _compute_deposit_cents(iv: Dict[str, Any]) -> int:
+    est_min = iv.get("price_estimate_min") or 0
+    est_max = iv.get("price_estimate_max") or 0
+    avg = (est_min + est_max) / 2 if (est_min or est_max) else 200
+    amount = int(avg * 100 * DEPOSIT_PERCENT)
+    return max(DEPOSIT_MIN_CENTS, min(DEPOSIT_MAX_CENTS, amount))
+
+
+@api_router.post("/interventions/{iv_id}/deposit/create")
+async def create_deposit_intent(iv_id: str, data: DepositIntentInput, user=Depends(get_current_user)):
+    iv = await db.interventions.find_one({"intervention_id": iv_id})
+    if not iv:
+        raise HTTPException(status_code=404, detail="Intervention introuvable")
+    if iv.get("client_id") != user["user_id"]:
+        raise HTTPException(status_code=403, detail="Réservé au client")
+    if iv.get("status") not in ("accepted",):
+        raise HTTPException(status_code=400, detail="L'artisan doit d'abord accepter la demande")
+    if iv.get("deposit_status") == "paid":
+        return {"already_paid": True, "amount_cents": iv.get("deposit_amount_cents")}
+
+    amount_cents = _compute_deposit_cents(iv)
+    pi = payments.create_payment_intent(
+        amount_cents=amount_cents,
+        currency="eur",
+        metadata={"intervention_id": iv_id, "client_id": user["user_id"], "artisan_id": iv.get("artisan_id", "")},
+        customer_email=user.get("email"),
+    )
+    await db.interventions.update_one(
+        {"intervention_id": iv_id},
+        {"$set": {
+            "deposit_status": "pending",
+            "deposit_amount_cents": amount_cents,
+            "deposit_currency": "eur",
+            "deposit_payment_intent_id": pi["id"],
+            "deposit_created_at": now_utc().isoformat(),
+        }},
+    )
+    await security.audit_log(
+        db, action="intervention.deposit_created",
+        actor_id=user["user_id"], actor_role=user.get("role"),
+        target=iv_id, metadata={"amount_cents": amount_cents}, severity="info",
+    )
+    return {
+        "client_secret": pi.get("client_secret"),
+        "payment_intent_id": pi["id"],
+        "amount_cents": amount_cents,
+        "currency": "eur",
+        "mock": pi.get("client_secret", "").endswith("_secret_mock"),
+    }
+
+
+@api_router.post("/interventions/{iv_id}/deposit/confirm")
+async def confirm_deposit(iv_id: str, data: DepositConfirmInput, user=Depends(get_current_user)):
+    """Frontend calls this after Stripe Payment Sheet returns success.
+    In mock mode, this is called directly since the fake PI never confirms via webhook.
+    """
+    iv = await db.interventions.find_one({"intervention_id": iv_id})
+    if not iv:
+        raise HTTPException(status_code=404, detail="Intervention introuvable")
+    if iv.get("client_id") != user["user_id"]:
+        raise HTTPException(status_code=403, detail="Réservé au client")
+    if iv.get("deposit_status") == "paid":
+        return {"ok": True, "already_paid": True}
+
+    await db.interventions.update_one(
+        {"intervention_id": iv_id},
+        {"$set": {
+            "deposit_status": "paid",
+            "deposit_paid_at": now_utc().isoformat(),
+            "status": "confirmed",
+        }},
+    )
+    await security.audit_log(
+        db, action="intervention.deposit_paid",
+        actor_id=user["user_id"], actor_role=user.get("role"),
+        target=iv_id, metadata={"amount_cents": iv.get("deposit_amount_cents")}, severity="critical",
+    )
+    return {"ok": True, "status": "confirmed"}
+
+
 app.include_router(api_router)
 
 app.add_middleware(
