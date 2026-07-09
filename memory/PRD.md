@@ -345,3 +345,30 @@ Architecture prête (endpoint `/calendar/oauth/status`, teaser UI). Vraie intég
 - Automatique via `STRIPE_API_KEY` dans `.env` — tant que `sk_test_emergent`, tout est simulé (avec vrais montants + flow complet)
 - Dès qu'une vraie clé Stripe est fournie, tout bascule sur des PaymentIntents et Transfers réels
 - Apple Pay natif s'active automatiquement sur build iOS après connexion réelle
+
+## Sprint 15 — Profile Screens Rendus Cliquables (LIVRÉ)
+
+### Backend — 8 nouveaux endpoints User self-service
+- `PATCH /users/me` — modifier nom, téléphone, adresse, ville, code postal
+- `GET /users/me/notifications` — préférences notifications
+- `POST /users/me/notifications` — mettre à jour préférences (push/email/sms/marketing/intervention_updates/new_bookings)
+- `GET /users/me/payment-methods` — liste des cartes enregistrées
+- `POST /users/me/payment-methods` — ajouter une carte (brand, last4, exp)
+- `DELETE /users/me/payment-methods/{pm_id}` — supprimer
+- `POST /users/me/payment-methods/{pm_id}/default` — définir par défaut
+
+### Frontend — 4 nouveaux écrans dans `/app/profile/`
+- **`personal.tsx`** — édition Nom / Téléphone / Adresse / Ville / Code postal, email en lecture seule, save + audit log
+- **`payment-methods.tsx`** — liste des cartes, définir par défaut, supprimer, ajouter Apple Pay / carte (mode démo)
+- **`notifications.tsx`** — 6 toggles : Push, Email, SMS, Suivi interventions, Nouvelles réservations, Marketing
+- **`support.tsx`** — Chat Auxora IA, Email, WhatsApp, Centre d'aide, CGU, Politique confidentialité
+
+### Client Profile — tous les rows cliquables
+- Informations personnelles → `/profile/personal`
+- Moyens de paiement → `/profile/payment-methods`
+- Notifications → `/profile/notifications`
+- Confidentialité & sécurité → `/security` (déjà fait au Sprint 8)
+- Aide & support → `/profile/support`
+
+### Audit logging
+- `user.profile_updated` avec liste des champs modifiés (RGPD trace)

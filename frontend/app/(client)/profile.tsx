@@ -16,12 +16,12 @@ export default function ClientProfile() {
     router.replace("/welcome");
   };
 
-  const rows: { icon: any; label: string; to?: string }[] = [
-    { icon: "person-outline", label: "Informations personnelles" },
-    { icon: "card-outline", label: "Moyens de paiement" },
-    { icon: "notifications-outline", label: "Notifications" },
+  const rows: { icon: any; label: string; to: string }[] = [
+    { icon: "person-outline", label: "Informations personnelles", to: "/profile/personal" },
+    { icon: "card-outline", label: "Moyens de paiement", to: "/profile/payment-methods" },
+    { icon: "notifications-outline", label: "Notifications", to: "/profile/notifications" },
     { icon: "shield-checkmark-outline", label: "Confidentialité & sécurité", to: "/security" },
-    { icon: "help-circle-outline", label: "Aide & support" },
+    { icon: "help-circle-outline", label: "Aide & support", to: "/profile/support" },
   ];
 
   return (
@@ -38,7 +38,7 @@ export default function ClientProfile() {
 
       <View style={styles.group}>
         {rows.map((r, i) => (
-          <Pressable key={r.label} testID={`profile-row-${i}`} onPress={() => r.to && router.push(r.to as any)} style={({ pressed }) => [styles.row, { opacity: pressed ? 0.6 : 1 }, i < rows.length - 1 && styles.rowBorder]}>
+          <Pressable key={r.label} testID={`profile-row-${i}`} onPress={() => router.push(r.to as any)} style={({ pressed }) => [styles.row, { opacity: pressed ? 0.6 : 1 }, i < rows.length - 1 && styles.rowBorder]}>
             <Ionicons name={r.icon} size={20} color={colors.onSurface} />
             <Txt weight="medium" size="base" style={{ flex: 1, marginLeft: spacing.md }}>{r.label}</Txt>
             <Ionicons name="chevron-forward" size={18} color={colors.muted} />
