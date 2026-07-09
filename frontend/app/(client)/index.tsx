@@ -208,8 +208,8 @@ function HelpoGlow() {
 // ---------------- Main Screen ----------------
 export default function HelpoHome() {
   const router = useRouter();
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const { user } = useAuth();
+  const firstName = (user?.name || "").split(" ")[0];
   const insets = useSafeAreaInsets();
   const scrollRef = useRef<ScrollView>(null);
 
@@ -242,7 +242,7 @@ export default function HelpoHome() {
       setDiag(result);
       setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 300);
     } catch (e: any) {
-      Alert.alert("Helpo", e?.message || "Impossible d'analyser. Réessayez.");
+      Alert.alert("Auxora", e?.message || "Impossible d'analyser. Réessayez.");
     } finally {
       setAnalyzing(false);
     }
@@ -349,7 +349,7 @@ export default function HelpoHome() {
             )}
           </Animated.View>
 
-          {/* Helpo hero */}
+          {/* Auxora hero */}
           <Animated.View entering={FadeInDown.delay(100).duration(600)} style={styles.hero}>
             <View style={styles.helpoAvatarWrap}>
               <HelpoGlow />
@@ -358,11 +358,7 @@ export default function HelpoHome() {
               </View>
             </View>
             <Txt weight="extrabold" style={styles.helpoName}>
-              Helpo
-            </Txt>
-            <Txt style={styles.helpoTagline}>Votre assistant maison intelligent.</Txt>
-            <Txt style={styles.helpoIntro}>
-              Décrivez votre problème naturellement.{"\n"}Je m&apos;occupe du reste.
+              {firstName ? `Comment puis-je vous aider ${firstName} ?` : "Comment puis-je vous aider ?"}
             </Txt>
           </Animated.View>
 
@@ -389,7 +385,7 @@ export default function HelpoHome() {
                   <View style={styles.aiAvatarSmall}>
                     <Ionicons name="sparkles" size={12} color={COLORS.accent} />
                   </View>
-                  <Txt weight="semibold" size="sm" color={COLORS.secondary}>Helpo</Txt>
+                  <Txt weight="semibold" size="sm" color={COLORS.secondary}>Auxora</Txt>
                 </View>
 
                 {analyzing && <TypingDots />}
@@ -467,20 +463,6 @@ export default function HelpoHome() {
                 </View>
               )}
             </View>
-          )}
-
-          {/* Trust section (only visible before conversation) */}
-          {!diag && !analyzing && (
-            <Animated.View entering={FadeInDown.delay(280).duration(600)} style={styles.trustSection}>
-              <Txt weight="bold" size="sm" style={styles.trustHeader}>
-                POURQUOI AUXORA ?
-              </Txt>
-              <View style={styles.trustRow}>
-                <TrustCard icon="shield-checkmark" title="Pros vérifiés" sub="Identité & assurance contrôlées." />
-                <TrustCard icon="lock-closed" title="Paiement sécurisé" sub="Escrow avant intervention." />
-                <TrustCard icon="chatbubbles" title="Support 24/7" sub="Helpo à vos côtés en continu." />
-              </View>
-            </Animated.View>
           )}
         </ScrollView>
 
@@ -568,18 +550,6 @@ function Meta({ icon, label }: { icon: any; label: string }) {
     <View style={styles.meta}>
       <Ionicons name={icon} size={13} color={COLORS.secondary} />
       <Txt size="sm" style={{ marginLeft: 4, color: COLORS.secondary }}>{label}</Txt>
-    </View>
-  );
-}
-
-function TrustCard({ icon, title, sub }: { icon: any; title: string; sub: string }) {
-  return (
-    <View style={styles.trustCard}>
-      <View style={styles.trustIcon}>
-        <Ionicons name={icon} size={18} color={COLORS.accent} />
-      </View>
-      <Txt weight="bold" size="sm" style={{ marginTop: 10, color: COLORS.white }}>{title}</Txt>
-      <Txt size="sm" style={{ marginTop: 3, color: COLORS.muted, lineHeight: 16 }}>{sub}</Txt>
     </View>
   );
 }
@@ -712,8 +682,11 @@ const styles = StyleSheet.create({
   },
   helpoName: {
     color: COLORS.white,
-    fontSize: 38,
+    fontSize: 30,
     letterSpacing: -0.5,
+    lineHeight: 38,
+    textAlign: "center",
+    paddingHorizontal: 8,
   },
   helpoTagline: {
     color: COLORS.secondary,
