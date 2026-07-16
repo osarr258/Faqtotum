@@ -234,6 +234,122 @@ def haversine(lat1, lon1, lat2, lon2):
     a = math.sin(dlat / 2) ** 2 + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(dlon / 2) ** 2
     return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
 
+# ----------------------------- Auth routes -----------------------------
+
+@api_router.get("/")
+async def root():
+    return {"message": "ProConnect API"}
+
+@api_router.post("/auth/register")
+async def register(data: RegisterInput, request: Request):
+    existing = await db.users.find_one({"email": data.email.lower()})
+    if existing:
+        raise HTTPException(status_code=400, detail="Cet email est déjà utilisé")
+    user_id = new_id("user")
+    user = {
+        "user_id": user_id,
+        "email": data.email.lower(),
+        "name": data.name,
+        "role": data.role if data.role in ("client", "artisan") else "client",
+        "password": hash_password(data.password),
+        "picture": None,
+        "created_at": now_utc().isoformat(),
+    }
+    await db.users.insert_one(user)
+    token = await create_session(user_id, request=request)
+    ip = request.client.host if request.client else "unknown"
+    await security.audit_log(
+        db, action="auth.register", actor_id=user_id, actor_role=user["role"],
+        target=user_id, metadata={"email": user["email"]}, severity="info", ip=ip,
+    )
+    user.pop("_id", None)
+    return {"token": token, "user": {k: v for k, v in user.items() if k != "password"}}
+
+@api_router.post("/auth/login")
+async def login(data: LoginInput, request: Request):
+    ip = request.client.host if request.client else "unknown"
+    fwd = request.headers.get("x-forwarded-for")
+    if fwd:
+        ip = fwd.split(",")[0].strip()
+    # Rate limit / brute force check
+    await security.check_login_rate_limit(db, data.email, ip)
+    user = await db.users.find_one({"email": data.email.lower()})
+    if not user or not user.get("password") or not verify_password(data.password, user["password"]):
+        await security.record_login_attempt(db, data.email, ip, success=False)
+        await security.audit_log(
+            db, action="auth.login_failed", actor_id=None, actor_role=None,
+            target=data.email.lower(), metadata={"reason": "invalid_credentials"},
+            severity="warn", ip=ip,
+        )
+        raise HTTPException(status_code=401, detail="Email ou mot de passe incorrect")
+    if user.get("deleted") or user.get("anonymized"):
+        raise HTTPException(status_code=401, detail="Compte supprimé")
+    token = await create_session(user["user_id"], request=request)
+    await security.record_login_attempt(db, data.email, ip, success=True, user_id=user["user_id"])
+    await security.audit_log(
+        db, action="auth.login", actor_id=user["user_id"], actor_role=user.get("role"),
+        target=user["user_id"], metadata={"email": user["email"]}, severity="info", ip=ip,
+    )
+    user.pop("password", None)
+    user.pop("_id", None)
+    return {"token": token, "user": user}
+
+@api_router.post("/auth/google")
+async def google_auth(data: GoogleInput, request: Request):
+    async with httpx.AsyncClient() as hc:
+        resp = await hc.get(EMERGENT_SESSION_API, headers={"X-Session-ID": data.session_token})
+    if resp.status_code != 200:
+        raise HTTPException(status_code=401, detail="Authentification Google échouée")
+    info = resp.json()
+    email = info["email"].lower()
+    user = await db.users.find_one({"email": email})
+    is_new = False
+    if not user:
+        is_new = True
+        user_id = new_id("user")
+        user = {
+            "user_id": user_id,
+            "email": email,
+            "name": info.get("name", "Utilisateur"),
+            "role": data.role if data.role in ("client", "artisan") else "client",
+            "password": None,
+            "picture": info.get("picture"),
+            "created_at": now_utc().isoformat(),
+        }
+        await db.users.insert_one(user)
+    if user.get("deleted") or user.get("anonymized"):
+        raise HTTPException(status_code=401, detail="Compte supprimé")
+    token = await create_session(user["user_id"], request=request)
+    ip = request.client.host if request.client else "unknown"
+    await security.audit_log(
+        db, action="auth.google_login" if not is_new else "auth.google_register",
+        actor_id=user["user_id"], actor_role=user.get("role"),
+        target=user["user_id"], metadata={"email": email}, severity="info", ip=ip,
+    )
+    user.pop("password", None)
+    user.pop("_id", None)
+    return {"token": token, "user": user}
+
+@api_router.get("/auth/me")
+async def me(user=Depends(get_current_user)):
+    user.pop("_current_token", None)
+    return user
+
+@api_router.post("/auth/logout")
+async def logout(authorization: Optional[str] = Header(None)):
+    if authorization and authorization.startswith("Bearer "):
+        token = authorization.split(" ", 1)[1]
+        sess = await db.user_sessions.find_one({"session_token": token})
+        if sess:
+            await db.user_sessions.update_one(
+                {"session_token": token},
+                {"$set": {"revoked": True, "revoked_at": now_utc().isoformat()}},
+            )
+            await security.audit_log(
+                db, action="auth.logout", actor_id=sess.get("user_id"),
+                target=sess.get("user_id"), severity="info",
+            )
+    return {"ok": True}
 
 # ----------------------------- Categories route -----------------------------
 
@@ -3496,6 +3612,268 @@ async def property_ai_cards(pid: str, user=Depends(get_current_user)):
         {"key": "recommended_inspection", "title": "Inspection recommandée", "subtitle": "Suggérera les diagnostics à réaliser selon votre bien.", "icon": "sparkles"},
     ]
     return [{**c, "status": "coming_soon"} for c in cards]
+
+# ==================================================================
+# Sprint 8 — Security, Privacy, Authentication & Platform Integrity
+# ==================================================================
+
+class PasswordChangeInput(BaseModel):
+    current_password: str
+    new_password: str
+
+class MfaPrepareInput(BaseModel):
+    method: str = "totp"
+
+class MfaVerifyInput(BaseModel):
+    code: str
+
+class BiometricRegisterInput(BaseModel):
+    device_id: str
+    public_key: str
+
+class GdprConsentInput(BaseModel):
+    marketing: bool = False
+    analytics: bool = False
+    third_party: bool = False
+
+
+# ----- Security Center -----
+@api_router.get("/security/overview")
+async def security_overview(user=Depends(get_current_user)):
+    score = await security.compute_security_score(db, user["user_id"])
+    active_sessions = await db.user_sessions.count_documents({
+        "user_id": user["user_id"], "revoked": {"$ne": True},
+    })
+    recent_events = await security.list_audit_logs(db, actor_id=user["user_id"], limit=10)
+    mfa = await security.mfa_status(db, user["user_id"])
+    return {
+        "security_score": score,
+        "active_sessions": active_sessions,
+        "mfa": mfa,
+        "recent_events": recent_events,
+    }
+
+
+# ----- Sessions Management -----
+@api_router.get("/security/sessions")
+async def get_sessions(user=Depends(get_current_user)):
+    sessions = await security.list_user_sessions(db, user["user_id"])
+    current_token = user.get("_current_token", "")
+    current_id = current_token[:12] if current_token else ""
+    for s in sessions:
+        s["is_current"] = s.get("session_id") == current_id
+    return {"sessions": sessions, "total": len(sessions)}
+
+
+@api_router.delete("/security/sessions/{session_id}")
+async def revoke_session_endpoint(session_id: str, user=Depends(get_current_user)):
+    ok = await security.revoke_session(db, user["user_id"], session_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Session introuvable")
+    await security.audit_log(
+        db, action="session.revoke", actor_id=user["user_id"],
+        actor_role=user.get("role"), target=session_id, severity="info",
+    )
+    return {"ok": True, "revoked": session_id}
+
+
+@api_router.post("/security/sessions/revoke-others")
+async def revoke_other_sessions(user=Depends(get_current_user)):
+    current_token = user.get("_current_token", "")
+    count = await security.revoke_all_sessions_except(db, user["user_id"], current_token)
+    await security.audit_log(
+        db, action="session.revoke_all_others", actor_id=user["user_id"],
+        actor_role=user.get("role"), metadata={"count": count}, severity="warn",
+    )
+    return {"ok": True, "revoked_count": count}
+
+
+# ----- Password Change -----
+@api_router.post("/security/password/change")
+async def change_password(data: PasswordChangeInput, user=Depends(get_current_user), request: Request = None):
+    full = await db.users.find_one({"user_id": user["user_id"]})
+    if not full or not full.get("password"):
+        raise HTTPException(status_code=400, detail="Aucun mot de passe configuré (compte Google?)")
+    if not verify_password(data.current_password, full["password"]):
+        await security.audit_log(
+            db, action="password.change_failed", actor_id=user["user_id"],
+            actor_role=user.get("role"), severity="warn",
+        )
+        raise HTTPException(status_code=401, detail="Mot de passe actuel incorrect")
+    if len(data.new_password) < 8:
+        raise HTTPException(status_code=400, detail="Le nouveau mot de passe doit contenir au moins 8 caractères")
+    await db.users.update_one(
+        {"user_id": user["user_id"]},
+        {"$set": {"password": hash_password(data.new_password), "password_changed_at": now_utc().isoformat()}},
+    )
+    await security.audit_log(
+        db, action="password.changed", actor_id=user["user_id"],
+        actor_role=user.get("role"), severity="critical",
+    )
+    return {"ok": True, "message": "Mot de passe modifié"}
+
+
+# ----- Audit Logs -----
+@api_router.get("/security/audit")
+async def my_audit_logs(user=Depends(get_current_user), limit: int = 50):
+    logs = await security.list_audit_logs(db, actor_id=user["user_id"], limit=min(200, max(1, limit)))
+    for log in logs:
+        log.pop("hash", None)  # Don't expose full hash to end user
+        log.pop("prev_hash", None)
+    return {"logs": logs, "total": len(logs)}
+
+
+@api_router.get("/security/audit/verify")
+async def audit_chain_verify(user=Depends(require_roles("admin", "super_admin"))):
+    result = await security.verify_audit_chain(db, sample=500)
+    return result
+
+
+@api_router.get("/security/audit/all")
+async def all_audit_logs(
+    limit: int = 100, action: Optional[str] = None, severity: Optional[str] = None,
+    user=Depends(require_roles("admin", "super_admin")),
+):
+    logs = await security.list_audit_logs(db, action=action, severity=severity, limit=min(500, limit))
+    return {"logs": logs, "total": len(logs)}
+
+
+# ----- GDPR / RGPD -----
+@api_router.get("/security/gdpr/consents")
+async def get_consents(user=Depends(get_current_user)):
+    doc = await db.gdpr_consents.find_one({"user_id": user["user_id"]}, {"_id": 0})
+    if not doc:
+        return {
+            "user_id": user["user_id"],
+            "marketing": False,
+            "analytics": False,
+            "third_party": False,
+            "updated_at": None,
+        }
+    return doc
+
+
+@api_router.post("/security/gdpr/consents")
+async def update_consents(data: GdprConsentInput, user=Depends(get_current_user)):
+    doc = {
+        "user_id": user["user_id"],
+        "marketing": data.marketing,
+        "analytics": data.analytics,
+        "third_party": data.third_party,
+        "updated_at": now_utc().isoformat(),
+    }
+    await db.gdpr_consents.update_one(
+        {"user_id": user["user_id"]}, {"$set": doc}, upsert=True,
+    )
+    await security.audit_log(
+        db, action="gdpr.consents_updated", actor_id=user["user_id"],
+        actor_role=user.get("role"), metadata=doc, severity="info",
+    )
+    return doc
+
+
+@api_router.get("/security/gdpr/export")
+async def gdpr_export(user=Depends(get_current_user)):
+    data = await security.export_user_data(db, user["user_id"])
+    await security.audit_log(
+        db, action="gdpr.data_exported", actor_id=user["user_id"],
+        actor_role=user.get("role"), severity="critical",
+        metadata={"collections": list(data.get("collections", {}).keys())},
+    )
+    return data
+
+
+@api_router.delete("/security/gdpr/account")
+async def gdpr_delete_account(user=Depends(get_current_user)):
+    result = await security.anonymize_user(db, user["user_id"])
+    await security.audit_log(
+        db, action="gdpr.account_deleted", actor_id=user["user_id"],
+        actor_role=user.get("role"), severity="critical",
+        metadata={"logs_retention_days": 30},
+    )
+    return result
+
+
+# ----- MFA -----
+@api_router.get("/security/mfa")
+async def get_mfa(user=Depends(get_current_user)):
+    return await security.mfa_status(db, user["user_id"])
+
+
+@api_router.post("/security/mfa/prepare")
+async def prepare_mfa(data: MfaPrepareInput, user=Depends(get_current_user)):
+    result = await security.mfa_prepare(db, user["user_id"], method=data.method)
+    await security.audit_log(
+        db, action="mfa.prepared", actor_id=user["user_id"],
+        actor_role=user.get("role"), metadata={"method": data.method}, severity="info",
+    )
+    return result
+
+
+@api_router.post("/security/mfa/verify")
+async def verify_mfa(data: MfaVerifyInput, user=Depends(get_current_user)):
+    result = await security.mfa_verify_stub(db, user["user_id"], data.code)
+    await security.audit_log(
+        db, action="mfa.enabled", actor_id=user["user_id"],
+        actor_role=user.get("role"), severity="critical",
+    )
+    return result
+
+
+@api_router.delete("/security/mfa")
+async def disable_mfa(user=Depends(get_current_user)):
+    result = await security.mfa_disable(db, user["user_id"])
+    await security.audit_log(
+        db, action="mfa.disabled", actor_id=user["user_id"],
+        actor_role=user.get("role"), severity="warn",
+    )
+    return result
+
+
+# ----- Biometrics (architecture stub) -----
+@api_router.post("/security/biometrics/register")
+async def register_biometric(data: BiometricRegisterInput, user=Depends(get_current_user)):
+    result = await security.biometrics_register(db, user["user_id"], data.device_id, data.public_key)
+    await security.audit_log(
+        db, action="biometrics.registered", actor_id=user["user_id"],
+        actor_role=user.get("role"), metadata={"device_id": data.device_id}, severity="info",
+    )
+    return result
+
+
+@api_router.get("/security/biometrics")
+async def list_biometrics(user=Depends(get_current_user)):
+    docs = await db.biometric_credentials.find(
+        {"user_id": user["user_id"], "active": True}, {"_id": 0, "public_key": 0},
+    ).to_list(50)
+    return {"devices": docs, "total": len(docs)}
+
+
+# ----- Roles & RBAC info -----
+@api_router.get("/security/roles")
+async def get_roles(user=Depends(get_current_user)):
+    """List roles available on the platform + current user role."""
+    return {
+        "current_role": user.get("role"),
+        "roles": [
+            {"key": k, "label": v["label"], "weight": v["weight"]}
+            for k, v in security.ROLES.items()
+        ],
+    }
+
+
+# ----- Admin: list all sessions (super_admin only) -----
+@api_router.get("/security/admin/sessions")
+async def admin_list_sessions(
+    user=Depends(require_roles("admin", "super_admin")),
+    limit: int = 100,
+):
+    cursor = db.user_sessions.find(
+        {"revoked": {"$ne": True}},
+        {"_id": 0, "session_token": 0},
+    ).sort("last_seen_at", -1).limit(min(500, limit))
+    sessions = await cursor.to_list(500)
+    return {"sessions": sessions, "total": len(sessions)}
 
 
 # ==================================================================
