@@ -372,3 +372,39 @@ Architecture prête (endpoint `/calendar/oauth/status`, teaser UI). Vraie intég
 
 ### Audit logging
 - `user.profile_updated` avec liste des champs modifiés (RGPD trace)
+
+## Phase Home OS — Passeport du logement (juillet 2026)
+
+Ajouts sur le module "MY HOME" existant, inspirés du prototype `artisan-finder-ai` :
+
+### Backend (services/homes.py + server.py)
+- Nouveau service `services/homes.py` avec catalogue équipements (FR + alias EN),
+  génération auto de rappels d'entretien + fin de garantie, agrégation budget,
+  vue passeport public.
+- `POST /api/properties` accepte maintenant : city, postal_code, rooms,
+  dpe_grade, cover_color. Idem PATCH.
+- `POST /api/properties/{pid}/equipment` déclenche auto-création de rappels
+  (entretien tous les X mois selon catégorie, alerte 30j avant fin de garantie).
+  Retourne `_auto_reminders_created`.
+- `GET /api/properties/{pid}/budget` — total_cents, events_count, by_month[12],
+  by_type[], top_artisans[5].
+- `POST/DELETE /api/properties/{pid}/share` — active/révoque un lien passeport.
+- `GET /api/passport/{token}` — endpoint PUBLIC (sans auth) — expose identité +
+  équipements + événements, masque documents/notes/user_id.
+- `GET|POST|DELETE /api/properties/{pid}/events` — journal d'interventions
+  chiffrées qui alimente le budget.
+
+### Frontend
+- Nouvelles hero images (hero-plombier, electricien, couvreur, menuisier,
+  peintre) copiées depuis le prototype dans `assets/images/`.
+- `app/property/create.tsx` — enrichi : ville, code postal, pièces, DPE, couleur
+  de couverture.
+- `app/property/[id]/index.tsx` — hero fallback selon type + gradient de la
+  couleur choisie, bouton "Passeport" dans le header, modal complète de partage
+  (générer/copier/partage natif/révoquer) via `expo-clipboard` et `Share` RN.
+- `app/property/[id]/budget.tsx` — nouvel écran avec total, bar-chart mensuel,
+  répartition par type + top 5 artisans (SVG-free, StyleSheet only).
+- Quick action "Budget" ajoutée dans le dashboard du bien.
+
+### Tests
+- `backend/tests/test_home_os_passport.py` — 10/10 PASS (iteration_16).
