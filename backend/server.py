@@ -16,7 +16,7 @@ from pathlib import Path
 from pydantic import BaseModel, Field, EmailStr
 from typing import List, Optional, Dict, Any
 from datetime import datetime, timezone, timedelta
-from services import matching, calendar_sync, trust_engine, payments, concierge, growth, enterprise, pro_hub, security
+from services import matching, calendar_sync, trust_engine, payments, concierge, growth, enterprise, pro_hub, security, paypal as paypal_svc
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
