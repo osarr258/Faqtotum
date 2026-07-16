@@ -1,0 +1,58 @@
+{
+  "summary": "Backend testing of the new Home OS / Property Passport features on top of the existing MY HOME section. Created /app/backend/tests/test_home_os_passport.py (10 pytest cases) covering: enhanced PropertyInput (city/postal_code/rooms/dpe_grade/cover_color), PATCH updates, equipment auto-reminders (_auto_reminders_created counter + GET /reminders inspection), POST/DELETE /share + public GET /passport/{token}, and GET /budget shape + reflect-after-event. Result: 7/10 PASS, 3/10 FAIL — all three failures are real backend bugs. Login (client.test@auxora.fr), enhanced property fields, PATCH, share/passport (with correct field sanitization: no user_id / notes leak), and budget shape all work correctly. Three concrete regressions were found and are detailed below.",
+  "backend_issues": {
+    "critical": [
+      {
+        "endpoint": "POST /api/properties/{pid}/events",
+        "issue": "Endpoint does NOT exist (returns 404 Not Found). The review request explicitly asks to POST an event with {event_type, title, cost_cents, event_date, artisan_name} and expects it to feed the /budget aggregation. The `property_events` collection is *read* by GET /budget and by GET /passport/{token}, but no *write* route was added. Without it, users cannot populate the budget UI (bookings-based events remain but do not cover manual cost entries).",
+        "priority": "CRITICAL"
+      },
+      {
+        "endpoint": "POST /api/properties/{pid}/equipment (auto-reminders)",
+        "issue": "The 'garantie' (warranty-end) auto-reminder is NEVER created when `warranty_until` is sent as a date-only ISO string like \"2027-01-15\" (which is exactly the payload documented in the review request AND used by the existing EquipmentInput schema). Root cause in /app/backend/services/homes.py line ~193: `datetime.fromisoformat('2027-01-15')` returns a *naive* datetime, then `warn > now_utc()` compares naive vs tz-aware and raises TypeError, which is silently swallowed by `except Exception: pass`. Reproduced: created boiler with warranty_until='2027-01-15', response reported `_auto_reminders_created: 1` (only entretien), and GET /reminders confirmed only reminder_type='entretien' exists — 'garantie' is missing. Fix: parse the warranty date defensively (append 'T00:00:00+00:00' or use `.replace(tzinfo=timezone.utc)` when tz is None) and/or drop the blanket `except Exception`.",
+        "priority": "CRITICAL"
+      }
+    ],
+    "minor": [
+      {
+        "endpoint": "GET /api/properties/{pid}/budget",
+        "issue": "Consequence of the missing POST /events endpoint: total_cents cannot be manually incremented, and top_artisans stays empty unless a completed booking is linked. Once POST /events is added, this test should pass."
+      }
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_home_os_passport.py",
+    "/app/test_reports/pytest/home_os_passport.xml"
+  ],
+  "action_items": [
+    "Add POST /api/properties/{pid}/events (and probably GET/PATCH/DELETE for symmetry). Insert into `property_events` with the shape the /budget aggregator already reads: {event_id, property_id, user_id, event_type in EVENT_TYPES, title, cost_cents, event_date (YYYY-MM-DD), artisan_name, description?, created_at}. Then GET /budget will pick it up automatically.",
+    "In /app/backend/services/homes.py `generate_reminders_for_equipment`, make the warranty parsing tz-safe. Suggested minimal fix: `w_dt = datetime.fromisoformat(str(warranty)); if w_dt.tzinfo is None: w_dt = w_dt.replace(tzinfo=timezone.utc)`. Also remove or tighten the surrounding `except Exception: pass` so future date-parsing regressions don't fail silently — currently the endpoint reports _auto_reminders_created=1 even though it *tried* to create 2, which is misleading to the frontend and to tests.",
+    "Consider also asserting warranty_until parses successfully at Pydantic validation (or explicitly typing it as `date`) so callers get a 422 instead of a silent no-op reminder.",
+    "The public passport response builder in server.py (/api/passport/{token}) is a *duplicate* of the sanitized projection in homes.py `public_passport()`. The server.py version is the one actually used, but the two disagree on the property schema (server.py uses `name`/`type`/`surface`, homes.py uses `label`/`property_type`/`surface_m2`). Recommend deleting the dead `homes_svc.public_passport` helper or refactoring server.py to call it, to avoid drift."
+  ],
+  "critical_code_review_comments": [
+    "server.py is now 4720 lines — 6.7× the 700-line file-size guideline. The Home OS additions (~180 lines at the end) mirror routes and pydantic models already defined earlier in the same file (PropertyInput, EquipmentInput, budget logic). Extracting a `backend/routers/home_os.py` alongside `services/homes.py` would prevent the schema drift noted above.",
+    "In services/homes.py the budget aggregator (`compute_budget_stats`) is defined but the /properties/{pid}/budget route in server.py re-implements the same logic inline (lines 4616-4644). One of the two should be removed; keep the service and have the route call it.",
+    "The `except Exception: pass` on line ~218-219 of homes.py hides the tz-comparison bug reported above. Silent exception swallowing in reminder generation makes this class of bug invisible in prod. Log at WARNING level at minimum.",
+    "Public /api/passport/{token} correctly strips user_id and notes from equipments, and does not require auth — verified. Good.",
+    "Route ordering: /api/passport/{token} is defined after include_router but before app.include_router(api_router). Verified it is reachable and returns 404 on invalid token. OK."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_home_os_passport.py (new)"
+  ],
+  "success_rate": {
+    "backend": "70% (7/10) — 2 critical bugs + 1 downstream failure",
+    "frontend": "not tested (out of scope per request)"
+  },
+  "seed_data_creation": "One test property ('TEST_Home_OS' at 1 rue test, Paris 75011) is created in a module-scoped fixture with all new fields, then deleted at teardown. One equipment ('Chaudière test', boiler, Frisquet, installed 2023-01-15, warranty until 2027-01-15) is created inside it and cleaned up with the property. Share tokens are enabled and then revoked within the test. No leftover data expected after the run (cleanup verified).",
+  "retest_needed": true,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Re-run `pytest /app/backend/tests/test_home_os_passport.py -v` after the two fixes land. Expected outcome: 10/10 PASS. The test file is idempotent (uses TEST_ prefix + module-scoped fixture with teardown). Also confirm no regression in /app/backend/tests/test_my_home.py (existing MY HOME suite). Note: POST /api/auth/login returns `token` (not `session_token`) — the test file already handles both.",
+  "rca_of_issue": "Bug 1 (missing POST /events): route simply never implemented — the service layer and the aggregator route exist, but the CRUD write endpoint for property_events was skipped. Impact: any manual cost entry (invoices, quotes, cash payments) cannot be recorded on the passport → budget stays at 0 for users without completed bookings. Bug 2 (missing 'garantie' auto-reminder): `datetime.fromisoformat('2027-01-15')` returns a NAIVE datetime; comparing it against tz-aware `now_utc()` raises TypeError which the surrounding `except Exception: pass` in services/homes.py swallows silently. Reproduction: `curl -X POST /api/properties/{pid}/equipment ... warranty_until:2027-01-15` → response has `_auto_reminders_created:1` (should be 2), and only the entretien reminder appears in /reminders. Mitigation: (a) add `.replace(tzinfo=timezone.utc)` when parsed dt is naive, (b) narrow the except to `(ValueError, TypeError)` and log the failure instead of passing silently."
+}

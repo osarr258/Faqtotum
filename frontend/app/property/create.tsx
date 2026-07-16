@@ -11,12 +11,15 @@ import { api } from "@/src/api";
 import { colors, font, fontSize, radius, spacing } from "@/src/theme";
 
 const TYPES = [
-  { key: "apartment", label: "Appartement", icon: "business" as const },
-  { key: "house", label: "Maison", icon: "home" as const },
-  { key: "office", label: "Bureau", icon: "briefcase" as const },
-  { key: "commercial", label: "Commerce", icon: "storefront" as const },
-  { key: "vacation", label: "Secondaire", icon: "sunny" as const },
+  { key: "apartment", label: "Appartement", icon: "business" as const, color: "#8B5CF6" },
+  { key: "house", label: "Maison", icon: "home" as const, color: "#0EA5E9" },
+  { key: "office", label: "Bureau", icon: "briefcase" as const, color: "#10B981" },
+  { key: "commercial", label: "Commerce", icon: "storefront" as const, color: "#F97316" },
+  { key: "vacation", label: "Secondaire", icon: "sunny" as const, color: "#F59E0B" },
 ];
+
+const COVER_COLORS = ["#0EA5E9", "#8B5CF6", "#10B981", "#F59E0B", "#EF4444", "#EC4899", "#14B8A6", "#64748B"];
+const DPE_GRADES = ["A", "B", "C", "D", "E", "F", "G"];
 
 export default function PropertyCreateEdit() {
   const params = useLocalSearchParams<{ id?: string }>();
@@ -27,8 +30,13 @@ export default function PropertyCreateEdit() {
   const [name, setName] = useState("");
   const [type, setType] = useState("apartment");
   const [address, setAddress] = useState("");
+  const [city, setCity] = useState("");
+  const [postal, setPostal] = useState("");
   const [surface, setSurface] = useState("");
   const [year, setYear] = useState("");
+  const [rooms, setRooms] = useState("");
+  const [dpe, setDpe] = useState<string | null>(null);
+  const [coverColor, setCoverColor] = useState("#0EA5E9");
   const [notes, setNotes] = useState("");
   const [photos, setPhotos] = useState<string[]>([]);
   const [saving, setSaving] = useState(false);
@@ -42,8 +50,13 @@ export default function PropertyCreateEdit() {
         setName(p.name || "");
         setType(p.type || "apartment");
         setAddress(p.address || "");
+        setCity(p.city || "");
+        setPostal(p.postal_code || "");
         setSurface(p.surface != null ? String(p.surface) : "");
         setYear(p.year_built != null ? String(p.year_built) : "");
+        setRooms(p.rooms != null ? String(p.rooms) : "");
+        setDpe(p.dpe_grade || null);
+        setCoverColor(p.cover_color || "#0EA5E9");
         setNotes(p.notes || "");
         setPhotos(p.photos || []);
       } catch {}
@@ -78,8 +91,13 @@ export default function PropertyCreateEdit() {
         name: name.trim(),
         type,
         address: address.trim(),
+        city: city.trim(),
+        postal_code: postal.trim(),
         surface: surface ? parseFloat(surface) : null,
         year_built: year ? parseInt(year, 10) : null,
+        rooms: rooms ? parseInt(rooms, 10) : null,
+        dpe_grade: dpe,
+        cover_color: coverColor,
         notes: notes.trim(),
         photos,
       };
@@ -158,10 +176,36 @@ export default function PropertyCreateEdit() {
             testID="address-input"
             value={address}
             onChangeText={setAddress}
-            placeholder="12 rue de la Roquette, 75011"
+            placeholder="12 rue de la Roquette"
             placeholderTextColor={colors.muted}
             style={styles.input}
           />
+
+          <View style={{ flexDirection: "row", gap: spacing.md }}>
+            <View style={{ width: 110 }}>
+              <SectionTitle>Code postal</SectionTitle>
+              <TextInput
+                testID="postal-input"
+                value={postal}
+                onChangeText={setPostal}
+                placeholder="75011"
+                placeholderTextColor={colors.muted}
+                keyboardType="numeric"
+                style={styles.input}
+              />
+            </View>
+            <View style={{ flex: 1 }}>
+              <SectionTitle>Ville</SectionTitle>
+              <TextInput
+                testID="city-input"
+                value={city}
+                onChangeText={setCity}
+                placeholder="Paris"
+                placeholderTextColor={colors.muted}
+                style={styles.input}
+              />
+            </View>
+          </View>
 
           <View style={{ flexDirection: "row", gap: spacing.md }}>
             <View style={{ flex: 1 }}>
@@ -188,6 +232,49 @@ export default function PropertyCreateEdit() {
                 style={styles.input}
               />
             </View>
+            <View style={{ flex: 1 }}>
+              <SectionTitle>Pièces</SectionTitle>
+              <TextInput
+                testID="rooms-input"
+                value={rooms}
+                onChangeText={setRooms}
+                placeholder="4"
+                placeholderTextColor={colors.muted}
+                keyboardType="numeric"
+                style={styles.input}
+              />
+            </View>
+          </View>
+
+          <SectionTitle>Étiquette DPE</SectionTitle>
+          <View style={styles.dpeRow}>
+            {DPE_GRADES.map((g) => {
+              const active = dpe === g;
+              return (
+                <Pressable
+                  key={g}
+                  testID={`dpe-${g}`}
+                  onPress={() => { Haptics.selectionAsync().catch(() => {}); setDpe(active ? null : g); }}
+                  style={[styles.dpeChip, active && { backgroundColor: dpeColor(g), borderColor: dpeColor(g) }]}
+                >
+                  <Txt weight="extrabold" size="md" color={active ? "#fff" : colors.onSurface}>{g}</Txt>
+                </Pressable>
+              );
+            })}
+          </View>
+
+          <SectionTitle>Couleur de couverture</SectionTitle>
+          <View style={styles.colorRow}>
+            {COVER_COLORS.map((c) => (
+              <Pressable
+                key={c}
+                testID={`color-${c}`}
+                onPress={() => { Haptics.selectionAsync().catch(() => {}); setCoverColor(c); }}
+                style={[styles.colorDot, { backgroundColor: c }, coverColor === c && styles.colorDotActive]}
+              >
+                {coverColor === c && <Ionicons name="checkmark" size={16} color="#fff" />}
+              </Pressable>
+            ))}
           </View>
 
           <SectionTitle>Notes</SectionTitle>
@@ -221,6 +308,14 @@ function SectionTitle({ children }: { children: React.ReactNode }) {
       {String(children).toUpperCase()}
     </Txt>
   );
+}
+
+function dpeColor(g: string): string {
+  const map: Record<string, string> = {
+    A: "#059669", B: "#10B981", C: "#84CC16",
+    D: "#EAB308", E: "#F59E0B", F: "#F97316", G: "#EF4444",
+  };
+  return map[g] || colors.brand;
 }
 
 const styles = StyleSheet.create({
@@ -276,5 +371,22 @@ const styles = StyleSheet.create({
     color: colors.onSurface,
     fontFamily: font.medium,
     fontSize: fontSize.lg,
+  },
+  dpeRow: { flexDirection: "row", gap: spacing.sm, flexWrap: "wrap" },
+  dpeChip: {
+    width: 44, height: 44, borderRadius: 22,
+    borderWidth: 1.5, borderColor: colors.border,
+    backgroundColor: colors.surfaceSecondary,
+    alignItems: "center", justifyContent: "center",
+  },
+  colorRow: { flexDirection: "row", gap: spacing.sm, flexWrap: "wrap" },
+  colorDot: {
+    width: 40, height: 40, borderRadius: 20,
+    alignItems: "center", justifyContent: "center",
+    borderWidth: 2, borderColor: "transparent",
+  },
+  colorDotActive: {
+    borderColor: colors.onSurface,
+    transform: [{ scale: 1.1 }],
   },
 });

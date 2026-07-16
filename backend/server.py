@@ -16,7 +16,7 @@ from pathlib import Path
 from pydantic import BaseModel, Field, EmailStr
 from typing import List, Optional, Dict, Any
 from datetime import datetime, timezone, timedelta
-from services import matching, calendar_sync, trust_engine, payments, concierge, growth, enterprise, pro_hub, security, paypal as paypal_svc
+from services import matching, calendar_sync, trust_engine, payments, concierge, growth, enterprise, pro_hub, security, paypal as paypal_svc, homes as homes_svc
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -3215,8 +3215,13 @@ class PropertyInput(BaseModel):
     name: str
     type: str = "apartment"
     address: Optional[str] = ""
+    city: Optional[str] = ""
+    postal_code: Optional[str] = ""
     surface: Optional[float] = None
     year_built: Optional[int] = None
+    rooms: Optional[int] = None
+    dpe_grade: Optional[str] = None
+    cover_color: Optional[str] = "#0EA5E9"
     photos: List[str] = Field(default_factory=list)  # base64 or URL
     notes: Optional[str] = ""
 
@@ -3281,10 +3286,17 @@ async def create_property(body: PropertyInput, user=Depends(get_current_user)):
         "name": body.name.strip(),
         "type": body.type,
         "address": (body.address or "").strip(),
+        "city": (body.city or "").strip(),
+        "postal_code": (body.postal_code or "").strip(),
         "surface": body.surface,
         "year_built": body.year_built,
+        "rooms": body.rooms,
+        "dpe_grade": body.dpe_grade,
+        "cover_color": body.cover_color or "#0EA5E9",
         "photos": body.photos or [],
         "notes": (body.notes or "").strip(),
+        "health_score": 100,
+        "share_token": None,
         "created_at": now_utc().isoformat(),
         "updated_at": now_utc().isoformat(),
     }
@@ -3301,7 +3313,7 @@ async def update_property(pid: str, body: dict, user=Depends(get_current_user)):
     await _get_property(pid, user["user_id"])
     if "type" in body and body["type"] not in PROPERTY_TYPES:
         raise HTTPException(status_code=400, detail="Type de bien invalide")
-    allowed = {"name", "type", "address", "surface", "year_built", "photos", "notes"}
+    allowed = {"name", "type", "address", "city", "postal_code", "surface", "year_built", "rooms", "dpe_grade", "cover_color", "photos", "notes"}
     updates = {k: v for k, v in body.items() if k in allowed}
     if "name" in updates and isinstance(updates["name"], str):
         updates["name"] = updates["name"].strip()
@@ -3354,6 +3366,22 @@ async def create_equipment(pid: str, body: EquipmentInput, user=Depends(get_curr
         "updated_at": now_utc().isoformat(),
     }
     await db.property_equipment.insert_one(dict(doc))
+    # Auto-generate maintenance + warranty reminders (idempotent)
+    eq_for_svc = {
+        "equipment_id": doc["equipment_id"],
+        "property_id": doc["property_id"],
+        "user_id": doc["user_id"],
+        "category": doc["category"],
+        "installed_at": doc.get("installed_on"),
+        "last_maintenance_at": None,
+        "warranty_until": doc.get("warranty_until"),
+    }
+    try:
+        reminders_created = await homes_svc.generate_reminders_for_equipment(db, eq_for_svc)
+        doc["_auto_reminders_created"] = len(reminders_created)
+    except Exception as ex:
+        logger.warning(f"auto-reminder generation failed: {ex}")
+        doc["_auto_reminders_created"] = 0
     return doc
 
 @api_router.get("/properties/{pid}/equipment/{eid}")
@@ -4521,6 +4549,159 @@ async def set_default_payment_method(pm_id: str, user=Depends(get_current_user))
     await db.payment_methods.update_many({"user_id": user["user_id"]}, {"$set": {"is_default": False}})
     await db.payment_methods.update_one({"pm_id": pm_id}, {"$set": {"is_default": True}})
     return {"ok": True}
+
+
+# ============================================================================
+# Home OS — Additional features on top of existing MY HOME section
+#   * Advanced health score computation (used by /properties/{pid}/insights)
+#   * Budget aggregation (charts data)
+#   * Public passport shareable link
+#   * Auto-generated maintenance reminders on equipment creation
+# The base CRUD (properties, equipment, documents, reminders, timeline) already
+# lives above around line 3205. We only add here what's genuinely new.
+# ============================================================================
+
+@api_router.post("/properties/{pid}/equipment/{eid}/auto-reminders")
+async def generate_equipment_reminders(pid: str, eid: str, user=Depends(get_current_user)):
+    """Idempotent: (re)generate maintenance + warranty reminders for an equipment.
+    Called automatically after equipment creation, but exposed to the client to
+    let users re-trigger it if they update dates on an existing equipment.
+    """
+    await _get_property(pid, user["user_id"])
+    eq = await db.property_equipment.find_one({"equipment_id": eid, "property_id": pid}, {"_id": 0})
+    if not eq:
+        raise HTTPException(status_code=404, detail="Équipement introuvable")
+    # Normalize equipment for homes_svc helper (it expects a slightly different shape)
+    eq_for_svc = {
+        "equipment_id": eq["equipment_id"],
+        "property_id": eq["property_id"],
+        "user_id": eq["user_id"],
+        "category": eq.get("category", "autre"),
+        "installed_at": eq.get("installed_on"),
+        "last_maintenance_at": eq.get("last_maintenance_at"),
+        "warranty_until": eq.get("warranty_until"),
+    }
+    reminders = await homes_svc.generate_reminders_for_equipment(db, eq_for_svc)
+    return {"reminders_created": len(reminders), "reminders": reminders}
+
+
+@api_router.get("/properties/{pid}/budget")
+async def property_budget(pid: str, user=Depends(get_current_user)):
+    """Return aggregated budget stats (total, by month, by type, top artisans).
+    Sources:
+      - `property_events` collection (manual entries with cost_cents)
+      - `bookings` collection (interventions attached to this property)
+    """
+    await _get_property(pid, user["user_id"])
+
+    events = await db.property_events.find(
+        {"property_id": pid, "cost_cents": {"$ne": None}}, {"_id": 0}
+    ).to_list(1000)
+
+    # Also pull bookings that had a completed payment
+    async for b in db.bookings.find(
+        {"client_id": user["user_id"], "property_id": pid, "status": {"$in": ["completed", "in_progress"]}},
+        {"_id": 0, "amount": 1, "created_at": 1, "trade": 1, "artisan_name": 1},
+    ):
+        try:
+            events.append({
+                "event_type": "intervention",
+                "event_date": (b.get("created_at") or "")[:10],
+                "cost_cents": int(float(b.get("amount") or 0) * 100),
+                "artisan_name": b.get("artisan_name"),
+            })
+        except Exception:
+            pass
+
+    total_cents = 0
+    by_month: Dict[str, int] = {}
+    by_type: Dict[str, int] = {}
+    by_artisan: Dict[str, int] = {}
+    for e in events:
+        cents = int(e.get("cost_cents") or 0)
+        total_cents += cents
+        month_key = str(e.get("event_date", ""))[:7]
+        by_month[month_key] = by_month.get(month_key, 0) + cents
+        et = e.get("event_type", "autre")
+        by_type[et] = by_type.get(et, 0) + cents
+        a = e.get("artisan_name")
+        if a:
+            by_artisan[a] = by_artisan.get(a, 0) + cents
+
+    keys = sorted(by_month.keys())[-12:]
+    return {
+        "total_cents": total_cents,
+        "events_count": len(events),
+        "by_month": [{"month": k, "cents": by_month[k]} for k in keys],
+        "by_type": [
+            {"type": t, "cents": c}
+            for t, c in sorted(by_type.items(), key=lambda x: -x[1])
+        ],
+        "top_artisans": [
+            {"name": n, "cents": c}
+            for n, c in sorted(by_artisan.items(), key=lambda x: -x[1])[:5]
+        ],
+    }
+
+
+@api_router.post("/properties/{pid}/share")
+async def enable_property_share(pid: str, user=Depends(get_current_user)):
+    """Enable a public read-only passport link for this property."""
+    await _get_property(pid, user["user_id"])
+    token = uuid.uuid4().hex
+    await db.properties.update_one(
+        {"property_id": pid},
+        {"$set": {"share_token": token, "updated_at": now_utc().isoformat()}},
+    )
+    platform = os.environ.get("PLATFORM_URL", "https://reviens-app.preview.emergentagent.com")
+    await security.audit_log(db, action="property.share_enabled", actor_id=user["user_id"], target=pid, severity="info")
+    return {"token": token, "url": f"{platform}/passport/{token}"}
+
+
+@api_router.delete("/properties/{pid}/share")
+async def disable_property_share(pid: str, user=Depends(get_current_user)):
+    await _get_property(pid, user["user_id"])
+    await db.properties.update_one(
+        {"property_id": pid},
+        {"$set": {"share_token": None, "updated_at": now_utc().isoformat()}},
+    )
+    await security.audit_log(db, action="property.share_disabled", actor_id=user["user_id"], target=pid, severity="info")
+    return {"ok": True}
+
+
+@api_router.get("/passport/{token}")
+async def passport_public(token: str):
+    """Public read-only endpoint — no authentication required."""
+    prop = await db.properties.find_one({"share_token": token}, {"_id": 0})
+    if not prop:
+        raise HTTPException(status_code=404, detail="Passeport introuvable ou révoqué")
+    eqs = await db.property_equipment.find(
+        {"property_id": prop["property_id"]},
+        {"_id": 0, "user_id": 0, "serial_number": 0, "notes": 0, "documents": 0},
+    ).to_list(200)
+    events: List[Dict[str, Any]] = []
+    async for e in db.property_events.find(
+        {"property_id": prop["property_id"]},
+        {"_id": 0, "user_id": 0, "description": 0, "cost_cents": 0},
+    ).sort("event_date", -1):
+        events.append(e)
+    return {
+        "property": {
+            "name": prop.get("name") or prop.get("label"),
+            "property_type": prop.get("type") or prop.get("property_type"),
+            "city": prop.get("city"),
+            "postal_code": prop.get("postal_code"),
+            "address": prop.get("address"),
+            "surface": prop.get("surface"),
+            "year_built": prop.get("year_built"),
+            "rooms": prop.get("rooms"),
+            "dpe_grade": prop.get("dpe_grade"),
+            "cover_color": prop.get("cover_color") or "#0EA5E9",
+            "health_score": prop.get("health_score", 100),
+        },
+        "equipments": eqs,
+        "events": events,
+    }
 
 
 app.include_router(api_router)
