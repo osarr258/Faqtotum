@@ -1,0 +1,72 @@
+{
+  "summary": "RETEST of determinism fix for test_distributed_brute_force_by_ip. Ran full backend pytest suite 3 consecutive times (plus 1 bonus run with -tb=long to diagnose). Target test PASSED in all runs. Overall suite showed 2 flaky failures in DIFFERENT tests, both caused by external HTTPS ConnectTimeout to the preview URL (network infra), NOT determinism bugs in the code.",
+  "test_runs": [
+    {
+      "run": 1,
+      "passed": 437,
+      "failed": 0,
+      "duration_sec": 75.63,
+      "target_test_result": "PASSED",
+      "notes": "Clean run - all 437 tests passed."
+    },
+    {
+      "run": 2,
+      "passed": 436,
+      "failed": 1,
+      "duration_sec": 108.50,
+      "target_test_result": "PASSED",
+      "failed_tests": ["tests/test_security_sprint.py::test_brute_force_lockout"],
+      "failure_cause": "requests.exceptions.ConnectTimeout to external preview URL (network flakiness, NOT determinism)",
+      "notes": "Failure is UNRELATED to the fix. Test passes in isolation (verified: pytest tests/test_security_sprint.py::test_brute_force_lockout => PASSED in 2.37s)."
+    },
+    {
+      "run": 3,
+      "passed": 437,
+      "failed": 0,
+      "duration_sec": 78.84,
+      "target_test_result": "PASSED",
+      "notes": "Clean run - all 437 tests passed."
+    },
+    {
+      "run": 4,
+      "passed": 436,
+      "failed": 1,
+      "duration_sec": 118.22,
+      "target_test_result": "PASSED",
+      "failed_tests": ["tests/test_pro_hub.py::TestAcademy::test_cards_category_filter"],
+      "failure_cause": "requests.exceptions.ConnectTimeout: HTTPSConnectionPool(host='reviens-app.preview.emergentagent.com', port=443) - Connection timeout after 15s to external preview URL (network flakiness, NOT determinism)",
+      "notes": "Bonus run to capture full traceback of the flaky failures. Confirms root cause is external network, not code."
+    }
+  ],
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {
+        "endpoint": "tests hitting EXPO_BACKEND_URL (preview URL)",
+        "issue": "Flaky ConnectTimeout to reviens-app.preview.emergentagent.com:443 (15s timeout). Occurs sporadically on ~1-2 tests per full-suite run under load. Different test each time (test_brute_force_lockout run 2, test_cards_category_filter run 4). Infrastructure/network flake, not a code bug. Recommend either (a) increase requests timeout in tests, (b) add pytest-rerunfailures with @pytest.mark.flaky(reruns=1), or (c) target backend directly via http://localhost:8001 to avoid ingress hop."
+      }
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_security_sprint_extra.py",
+    "/app/backend/tests/conftest.py"
+  ],
+  "action_items": [
+    "Determinism fix for test_distributed_brute_force_by_ip is VERIFIED - passed in all 4 runs.",
+    "OPTIONAL: Address unrelated network flakiness on preview URL. Recommended: install pytest-rerunfailures and mark network-dependent tests with @pytest.mark.flaky(reruns=1, reruns_delay=2), OR switch BASE_URL in tests from EXPO_BACKEND_URL to http://localhost:8001 to bypass ingress and eliminate ConnectTimeout risk."
+  ],
+  "critical_code_review_comments": [],
+  "updated_files": [],
+  "success_rate": {"backend": "99.77% (average across 4 runs = 1746/1748 test executions passed)", "frontend": "N/A - not tested per request"},
+  "seed_data_creation": "No new seed data. The fix pre-seeds login_attempts records inside the test itself (per Option C strategy).",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "The determinism fix is confirmed working. test_distributed_brute_force_by_ip passed 4/4 times. Any remaining flakiness in the full suite is caused by external network timeouts (ConnectTimeout to preview URL) affecting random tests, not the fix. If addressing infra flake, target the requests.Session timeout or use localhost:8001 for backend tests.",
+  "rca_of_issue": "Original determinism issue: test_distributed_brute_force_by_ip attempted 30 concurrent bad logins from unique IPs to trip a >30-attempt-per-window global rate limit. Under CI load, one or more of the parallel requests could be dropped/timed out, causing counter to stay <30 and test to expect 429 that never came. Fix (Option C): pre-seed 29 fake login_attempts records directly into MongoDB, then perform a single deterministic bad login - guaranteed to cross threshold. Verification: target test now passes 4/4 consecutive full-suite runs. Any flakes seen were on unrelated tests due to external HTTPS ConnectTimeout (15s) to the preview URL - a network/ingress issue independent of this fix."
+}
