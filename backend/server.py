@@ -4557,9 +4557,56 @@ async def set_default_payment_method(pm_id: str, user=Depends(get_current_user))
 #   * Budget aggregation (charts data)
 #   * Public passport shareable link
 #   * Auto-generated maintenance reminders on equipment creation
+#   * Manual event log for the budget aggregator
 # The base CRUD (properties, equipment, documents, reminders, timeline) already
 # lives above around line 3205. We only add here what's genuinely new.
 # ============================================================================
+
+class PropertyEventInput(BaseModel):
+    event_type: str = Field(..., description="installation|entretien|reparation|controle|nettoyage|sinistre|autre")
+    title: str = Field(..., min_length=1, max_length=140)
+    description: Optional[str] = None
+    artisan_name: Optional[str] = None
+    cost_cents: Optional[int] = None
+    event_date: str = Field(..., description="ISO date YYYY-MM-DD")
+
+
+@api_router.get("/properties/{pid}/events")
+async def list_property_events(pid: str, user=Depends(get_current_user)):
+    await _get_property(pid, user["user_id"])
+    rows = await db.property_events.find({"property_id": pid}, {"_id": 0}).sort("event_date", -1).to_list(500)
+    return {"items": rows, "count": len(rows)}
+
+
+@api_router.post("/properties/{pid}/events")
+async def create_property_event(pid: str, body: PropertyEventInput, user=Depends(get_current_user)):
+    await _get_property(pid, user["user_id"])
+    if body.event_type not in homes_svc.EVENT_TYPES:
+        raise HTTPException(status_code=400, detail="Type d'événement invalide")
+    ev = {
+        "event_id": homes_svc.new_id("evt"),
+        "property_id": pid,
+        "user_id": user["user_id"],
+        "event_type": body.event_type,
+        "title": body.title.strip(),
+        "description": body.description,
+        "artisan_name": body.artisan_name,
+        "cost_cents": body.cost_cents,
+        "event_date": body.event_date,
+        "created_at": now_utc().isoformat(),
+    }
+    await db.property_events.insert_one(dict(ev))
+    return ev
+
+
+@api_router.delete("/properties/{pid}/events/{event_id}")
+async def delete_property_event(pid: str, event_id: str, user=Depends(get_current_user)):
+    await _get_property(pid, user["user_id"])
+    r = await db.property_events.delete_one({"event_id": event_id, "property_id": pid})
+    if r.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Événement introuvable")
+    return {"ok": True}
+
 
 @api_router.post("/properties/{pid}/equipment/{eid}/auto-reminders")
 async def generate_equipment_reminders(pid: str, eid: str, user=Depends(get_current_user)):

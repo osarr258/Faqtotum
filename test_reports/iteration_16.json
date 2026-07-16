@@ -1,0 +1,34 @@
+{
+  "summary": "RETEST of the 2 backend bugs raised in iteration_15. Both fixes verified: (1) POST /api/properties/{pid}/events now exists and returns 200 with event_id; the created event is picked up by GET /budget (total_cents=15000, 'Karim B.' present in top_artisans). (2) Equipment creation with warranty_until='2027-01-15' (date-only ISO) now returns _auto_reminders_created=2 and GET /reminders lists BOTH 'entretien' and 'garantie' auto_generated reminders. Full pytest suite /app/backend/tests/test_home_os_passport.py now passes 10/10 (was 7/10). Also ran an explicit end-to-end scenario mirroring the review-request payload to double-confirm.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_home_os_passport.py",
+    "/app/test_reports/pytest/home_os_passport_retest.xml"
+  ],
+  "action_items": [
+    "Nothing blocking — both critical bugs from iteration_15 are resolved. Optional cleanup carried over: split server.py (still 4700+ lines) and remove the duplicate budget-aggregation code path between server.py and services/homes.py; also consider removing the blanket `except Exception: pass` in generate_reminders_for_equipment so future date-parsing regressions surface immediately."
+  ],
+  "critical_code_review_comments": [
+    "Fixes for tz-naive vs tz-aware datetime comparison and for POST /events are effective end-to-end. Consider logging (WARN) inside the reminder-generation exception handler to catch future silent failures.",
+    "server.py file size (>4700 lines) still exceeds the 700-line guideline — recommend extracting a home_os router module in a follow-up refactor."
+  ],
+  "updated_files": [],
+  "success_rate": {
+    "backend": "100% (10/10)",
+    "frontend": "not tested (out of scope per request)"
+  },
+  "seed_data_creation": "Module-scoped fixture 'TEST_Home_OS' property + one boiler equipment; both cleaned up on teardown. An additional ad-hoc property 'TEST_retest_*' was created for the explicit end-to-end check and deleted immediately after.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Home OS / Property Passport backend suite is now fully green. Next iteration should focus on the frontend integration of these endpoints (Property list with cover_color, equipment auto-reminders visible in UI, budget screen showing top_artisans, share/passport public preview).",
+  "rca_of_issue": "N/A — both bugs from iteration_15 fixed and re-verified. Direct payload from review request: POST /events with cost_cents=15000/artisan='Karim B.' → 200 + event_id; GET /budget → total_cents=15000, top_artisans=[{name:'Karim B.', cents:15000}]. Equipment with warranty_until='2027-01-15' → _auto_reminders_created=2, GET /reminders returns both 'entretien' and 'garantie' auto_generated=true."
+}

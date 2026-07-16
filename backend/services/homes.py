@@ -191,6 +191,8 @@ async def generate_reminders_for_equipment(db, equipment: Dict[str, Any]) -> Lis
     if warranty:
         try:
             w_dt = datetime.fromisoformat(str(warranty))
+            if w_dt.tzinfo is None:
+                w_dt = w_dt.replace(tzinfo=timezone.utc)
             warn = w_dt - timedelta(days=30)
             if warn > now_utc():
                 existing = await db.property_reminders.find_one({
@@ -215,8 +217,8 @@ async def generate_reminders_for_equipment(db, equipment: Dict[str, Any]) -> Lis
                         "created_at": now_utc().isoformat(),
                     }
                     reminders.append(r)
-        except Exception:
-            pass
+        except (ValueError, TypeError) as ex:
+            logger.warning(f"warranty reminder skipped for {equipment.get('equipment_id')}: {ex}")
 
     if reminders:
         await db.property_reminders.insert_many([dict(r) for r in reminders])
