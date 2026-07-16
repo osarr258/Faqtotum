@@ -1,0 +1,48 @@
+{
+  "summary": "Sprint 14 Phase 1 Bloc 2 — Users router migration is FULLY VERIFIED (23/23 dedicated tests pass, all 11 review-request smoke checks pass). However the deterministic-test bug fix (conftest login_attempts reset) is INCOMPLETE: test_distributed_brute_force_by_ip still flakes at ~33% rate (1 failure in 3 consecutive full-suite runs). test_login_smoke was stable in all 3 runs.",
+  "backend_issues": {
+    "critical": [
+      {
+        "endpoint": "tests/test_security_sprint_extra.py::test_distributed_brute_force_by_ip",
+        "issue": "Bug fix NOT effective. In 3 consecutive full-suite runs: Run 1 FAILED with 35x 401 (no 429 at all, meaning distributed brute-force check never triggered), Run 2 PASSED, Run 3 PASSED. Flake rate is ~1/3 — identical to the pre-fix behavior described in the review request. The conftest fixture correctly wipes login_attempts before every test, but the observed failure mode (zero 429s across 35 attempts) indicates the rate-limiter check never sees 30 distinct emails on the same IP. Most likely root cause: routes/auth.py::_client_ip() falls back to request.client.host when x-forwarded-for is missing, and services/security.py line 201 SKIPS the distributed check when ip.startswith('127.'). Under the k8s ingress, x-forwarded-for is normally set, but occasional cold-path / retry / different backend replica routing may deliver requests to the pod without the header, causing the IP to be seen as 127.0.0.1 (loopback) and the distributed check to be bypassed. This is an infrastructure-level issue that the conftest reset cannot address. Isolated run always passes (test correctly reaches 429 at attempt 31 when x-forwarded-for is present).",
+        "priority": "HIGH"
+      }
+    ],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_sprint14_bloc2_smoke.py (new — 11 review-request smoke checks)",
+    "/app/test_reports/pytest/sprint14_p1_bloc2_run1.xml (1 failure)",
+    "/app/test_reports/pytest/sprint14_p1_bloc2_run2.xml (0 failure)",
+    "/app/test_reports/pytest/sprint14_p1_bloc2_run3.xml (0 failure)"
+  ],
+  "action_items": [
+    "REGRESSION: the deterministic-test bug fix (tests/conftest.py) is claimed to eliminate flakes but 1 failure occurred in 3 runs (~33% flake rate, same as before). Investigate the true root cause: verify at services/security.py:201 whether the distributed-brute-force check is being bypassed when x-forwarded-for is missing at ingress. Two possible fixes: (a) tighten _client_ip() to require a non-loopback IP (raise a warning to logs when x-forwarded-for is absent) — helpful for debugging; (b) alternatively, make the test itself resilient by asserting on the distinct-email counter directly rather than relying on the ingress preserving x-forwarded-for on every request; (c) or seed the DB with 29 fake failed attempts for the test's IP prior to the loop so 429 is guaranteed at attempt 2. Recommended: option (c) — makes the test deterministic and still exercises the security path.",
+    "Reviewer's note that test_login_smoke was previously flaky could NOT be reproduced (passed all 3 runs). No action needed on that specific test."
+  ],
+  "critical_code_review_comments": [
+    "routes/users.py is clean, 219 lines, well-commented. Ownership contract enforced by composite {pm_id, user_id} MongoDB filter — verified via cross-user test (10). 404 vs 403 (no enumeration leak) verified.",
+    "PATCH /users/me correctly whitelists fields defensively (line 112). Privilege-escalation blocked (role/password payloads silently dropped). Confirmed by test_2_no_privilege_escalation.",
+    "Pydantic phone validator (line 46-55) properly rejects XSS-shaped strings via character-set whitelist — returns 422 as expected.",
+    "PaymentMethod brand normalization + last4 truncation via last4[-4:] is correct.",
+    "conftest.py autouse fixture wipes login_attempts before each test but does NOT solve the reported flake. Root cause of flake appears infrastructural (ingress x-forwarded-for) rather than test state bleed."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_sprint14_bloc2_smoke.py (created — 11 explicit review-request smoke checks)"
+  ],
+  "success_rate": {
+    "backend": "99.77% (436/437 in run1 — 1 flake; 437/437 in runs 2 & 3)",
+    "frontend": "N/A (not requested)"
+  },
+  "seed_data_creation": "None — used seeded accounts client.test@auxora.fr and pro.test@auxora.fr. All created payment methods are cleaned up in test teardown.",
+  "retest_needed": true,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Sprint 14 P1 Bloc 2 users router migration is 100% verified. New file /app/backend/tests/test_sprint14_bloc2_smoke.py replays the 11 explicit review checks. To reproduce the flake: run `cd /app/backend && python -m pytest tests/ -q` 3-5 times consecutively — expect ~1 failure per 3 runs on tests/test_security_sprint_extra.py::test_distributed_brute_force_by_ip with all 35 codes being 401 (rate-limit never triggered). Root cause is NOT test state bleed (conftest already resets login_attempts) but likely the ingress dropping x-forwarded-for on some requests, causing the backend to see a loopback IP which the distributed brute-force check explicitly excludes (services/security.py:201).",
+  "rca_of_issue": "Failure mode: 35 x 401, zero 429. If the counter were populating normally, at least attempts 31-35 should return 429. Since they don't, the check_login_rate_limit distinct-emails query is returning <30 despite 30+ writes. Two hypotheses: (1) The ip filter is bypassed because request.client.host resolves to 127.0.0.1 when the ingress omits x-forwarded-for on a given request (line 201 of services/security.py explicitly excludes 127.* IPs from the distributed check). (2) less likely — some records are written with a slightly different IP than others due to load-balancer routing to different backend pods each returning a different x-forwarded-for interpretation. Reproduction: sporadic — requires the ingress to omit x-forwarded-for at least once. Mitigation options: (a) tighten _client_ip to explicitly log/reject requests without x-forwarded-for in production, (b) rewrite the test to seed 29 fake failed-login records for the same IP before the loop so 429 is guaranteed by attempt 2, (c) make the security check treat 127.* as a real IP when running behind a trusted proxy signaled by an env var. Option (b) is the safest for making the test deterministic without changing production behavior."
+}

@@ -25,7 +25,6 @@ from services import matching, calendar_sync, trust_engine, payments, concierge,
 from security.dependencies import get_db_dependency
 from routes.auth import build_auth_router
 from routes.security import build_security_router
-from routes.users import build_users_router
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -4080,6 +4079,113 @@ async def artisan_earnings(user=Depends(get_current_user)):
     }
 
 
+# ----- User self-service: profile update, notifications, payment methods -----
+class UserUpdateInput(BaseModel):
+    name: Optional[str] = None
+    phone: Optional[str] = None
+    picture: Optional[str] = None
+    address: Optional[str] = None
+    city: Optional[str] = None
+    postal_code: Optional[str] = None
+
+class NotifPrefsInput(BaseModel):
+    push_enabled: Optional[bool] = None
+    email_enabled: Optional[bool] = None
+    sms_enabled: Optional[bool] = None
+    marketing: Optional[bool] = None
+    intervention_updates: Optional[bool] = None
+    new_bookings: Optional[bool] = None
+
+
+@api_router.patch("/users/me")
+async def update_me(data: UserUpdateInput, user=Depends(get_current_user)):
+    update = {k: v for k, v in data.dict(exclude_none=True).items()}
+    if not update:
+        return {"ok": True, "updated": 0}
+    await db.users.update_one({"user_id": user["user_id"]}, {"$set": update})
+    await security.audit_log(
+        db, action="user.profile_updated", actor_id=user["user_id"],
+        target=user["user_id"], metadata={"fields": list(update.keys())}, severity="info",
+    )
+    new_user = await db.users.find_one({"user_id": user["user_id"]}, {"_id": 0, "password": 0})
+    return {"ok": True, "user": new_user}
+
+
+@api_router.get("/users/me/notifications")
+async def get_notif_prefs(user=Depends(get_current_user)):
+    doc = await db.notif_prefs.find_one({"user_id": user["user_id"]}, {"_id": 0})
+    return doc or {
+        "user_id": user["user_id"],
+        "push_enabled": True,
+        "email_enabled": True,
+        "sms_enabled": False,
+        "marketing": False,
+        "intervention_updates": True,
+        "new_bookings": True,
+    }
+
+
+@api_router.post("/users/me/notifications")
+async def set_notif_prefs(data: NotifPrefsInput, user=Depends(get_current_user)):
+    update = {k: v for k, v in data.dict(exclude_none=True).items()}
+    update["user_id"] = user["user_id"]
+    update["updated_at"] = now_utc().isoformat()
+    await db.notif_prefs.update_one({"user_id": user["user_id"]}, {"$set": update}, upsert=True)
+    return update
+
+
+@api_router.get("/users/me/payment-methods")
+async def list_payment_methods(user=Depends(get_current_user)):
+    cursor = db.payment_methods.find({"user_id": user["user_id"]}, {"_id": 0}).sort("created_at", -1)
+    methods = await cursor.to_list(20)
+    return {"methods": methods}
+
+
+class PaymentMethodInput(BaseModel):
+    brand: str  # "visa" | "mastercard" | "apple_pay" | ...
+    last4: str
+    exp_month: Optional[int] = None
+    exp_year: Optional[int] = None
+    is_default: Optional[bool] = False
+
+
+@api_router.post("/users/me/payment-methods")
+async def add_payment_method(data: PaymentMethodInput, user=Depends(get_current_user)):
+    pm_id = new_id("pm")
+    doc = {
+        "pm_id": pm_id,
+        "user_id": user["user_id"],
+        "brand": data.brand,
+        "last4": data.last4[-4:],
+        "exp_month": data.exp_month,
+        "exp_year": data.exp_year,
+        "is_default": bool(data.is_default),
+        "created_at": now_utc().isoformat(),
+    }
+    if doc["is_default"]:
+        await db.payment_methods.update_many({"user_id": user["user_id"]}, {"$set": {"is_default": False}})
+    await db.payment_methods.insert_one(doc)
+    doc.pop("_id", None)
+    return doc
+
+
+@api_router.delete("/users/me/payment-methods/{pm_id}")
+async def delete_payment_method(pm_id: str, user=Depends(get_current_user)):
+    result = await db.payment_methods.delete_one({"pm_id": pm_id, "user_id": user["user_id"]})
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Introuvable")
+    return {"ok": True}
+
+
+@api_router.post("/users/me/payment-methods/{pm_id}/default")
+async def set_default_payment_method(pm_id: str, user=Depends(get_current_user)):
+    pm = await db.payment_methods.find_one({"pm_id": pm_id, "user_id": user["user_id"]})
+    if not pm:
+        raise HTTPException(status_code=404, detail="Introuvable")
+    await db.payment_methods.update_many({"user_id": user["user_id"]}, {"$set": {"is_default": False}})
+    await db.payment_methods.update_one({"pm_id": pm_id}, {"$set": {"is_default": True}})
+    return {"ok": True}
+
 
 # ============================================================================
 # Home OS — Additional features on top of existing MY HOME section
@@ -4299,10 +4405,8 @@ app.include_router(api_router)
 # below have been REMOVED for a domain, the modular router takes over.
 _modular_auth = build_auth_router(db, _get_current_user)
 _modular_security = build_security_router(db, _get_current_user, _require_roles)
-_modular_users = build_users_router(db, _get_current_user)
 app.include_router(_modular_auth, prefix="/api")
 app.include_router(_modular_security, prefix="/api")
-app.include_router(_modular_users, prefix="/api")
 
 app.add_middleware(
     CORSMiddleware,
