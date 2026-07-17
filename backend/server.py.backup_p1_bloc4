@@ -27,9 +27,6 @@ from routes.auth import build_auth_router
 from routes.security import build_security_router
 from routes.users import build_users_router
 from routes.artisans import build_artisans_router
-from routes.bookings import build_bookings_router
-from routes.missions import build_missions_router
-from routes.interventions import build_interventions_router
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -269,7 +266,81 @@ async def artisans_nearby_early(
 ):
     return await _artisans_nearby_impl(lat, lng, radius, category, only_available_now, limit)
 
+# ----------------------------- Booking routes -----------------------------
 
+@api_router.post("/bookings")
+async def create_booking(data: BookingInput, user=Depends(get_current_user)):
+    artisan = await db.artisan_profiles.find_one({"artisan_id": data.artisan_id}, {"_id": 0})
+    if not artisan:
+        raise HTTPException(status_code=404, detail="Artisan introuvable")
+    booking_id = new_id("bk")
+    conv_id = "conv_" + booking_id.split("_", 1)[1]
+    booking = {
+        "booking_id": booking_id,
+        "conversation_id": conv_id,
+        "client_id": user["user_id"],
+        "client_name": user["name"],
+        "artisan_id": data.artisan_id,
+        "artisan_user_id": artisan.get("user_id"),
+        "artisan_name": artisan.get("name") or artisan.get("title"),
+        "trade_name": artisan.get("trade_name"),
+        "date": data.date,
+        "slot": data.slot,
+        "description": data.description,
+        "status": "pending",
+        "created_at": now_utc().isoformat(),
+    }
+    await db.bookings.insert_one(booking)
+    await db.conversations.insert_one({
+        "conversation_id": conv_id,
+        "booking_id": booking_id,
+        "client_id": user["user_id"],
+        "client_name": user["name"],
+        "artisan_user_id": artisan.get("user_id"),
+        "artisan_id": data.artisan_id,
+        "artisan_name": artisan.get("name") or artisan.get("title"),
+        "trade_name": artisan.get("trade_name"),
+        "last_message": "Réservation créée",
+        "last_at": now_utc().isoformat(),
+        "created_at": now_utc().isoformat(),
+    })
+    booking.pop("_id", None)
+    return booking
+
+async def annotate_reviewed(bookings, user_id):
+    for b in bookings:
+        rev = await db.reviews.find_one({"booking_id": b["booking_id"], "from_user_id": user_id})
+        b["reviewed"] = rev is not None
+    return bookings
+
+@api_router.get("/bookings/mine")
+async def my_bookings(user=Depends(get_current_user)):
+    bookings = await db.bookings.find({"client_id": user["user_id"]}, {"_id": 0}).to_list(500)
+    bookings.sort(key=lambda x: x.get("created_at", ""), reverse=True)
+    return await annotate_reviewed(bookings, user["user_id"])
+
+@api_router.get("/bookings/received")
+async def received_bookings(user=Depends(get_current_user)):
+    bookings = await db.bookings.find({"artisan_user_id": user["user_id"]}, {"_id": 0}).to_list(500)
+    bookings.sort(key=lambda x: x.get("created_at", ""), reverse=True)
+    return await annotate_reviewed(bookings, user["user_id"])
+
+@api_router.patch("/bookings/{booking_id}")
+async def update_booking(booking_id: str, data: BookingStatusInput, user=Depends(get_current_user)):
+    booking = await db.bookings.find_one({"booking_id": booking_id}, {"_id": 0})
+    if not booking:
+        raise HTTPException(status_code=404, detail="Réservation introuvable")
+    if data.status not in ("accepted", "declined", "completed"):
+        raise HTTPException(status_code=400, detail="Statut invalide")
+    await db.bookings.update_one({"booking_id": booking_id}, {"$set": {"status": data.status}})
+    booking["status"] = data.status
+    # Loyalty hook — customer earns points when a booking is completed.
+    if data.status == "completed":
+        await _add_points(booking["client_id"], "booking_completed")
+    # Trust Engine — recompute on any status change that affects counters.
+    if booking.get("artisan_id"):
+        await trust_engine.persist(db, booking["artisan_id"])
+    return booking
 
 # ----------------------------- Reviews -----------------------------
 
@@ -685,73 +756,150 @@ def mission_artisan_card(a: dict):
     return card
 
 
-# ---------------------------------------------------------------------------
-# Helpers restored after Bloc 4 sed cleanup — still referenced by non-migrated
-# code (deposit endpoints, mission complete, /reviews, home-passport).
-# ---------------------------------------------------------------------------
+@api_router.post("/missions")
+async def create_mission(data: MissionInput, user=Depends(get_current_user)):
+    artisans = await db.artisan_profiles.find({"is_subscribed": True, "trade": data.trade}, {"_id": 0}).to_list(500)
+    artisans = [await enrich_artisan(a) for a in artisans]
+    if not artisans:
+        raise HTTPException(status_code=404, detail="Aucun professionnel disponible pour ce métier.")
+    ctx = _match_ctx(artisans, data.urgency, data.lat, data.lng)
+    ranked = matching.rank(artisans, ctx)
+    client_lat = data.lat if data.lat is not None else 48.8566
+    client_lng = data.lng if data.lng is not None else 2.3522
+    candidates = [a["artisan_id"] for a in ranked]
+    is_emergency = data.urgency == "urgence"
+    top_matches = [mission_artisan_card(a) for a in ranked[:3]]
+    top = ranked[0]
+    # Emergency mode: broadcast to several pros simultaneously (first to accept wins).
+    notified_pros = [a["artisan_id"] for a in ranked[:5]] if is_emergency else []
+    mission = {
+        "mission_id": new_id("msn"),
+        "client_id": user["user_id"],
+        "client_name": user["name"],
+        "trade": data.trade,
+        "trade_name": top.get("trade_name"),
+        "urgency": data.urgency,
+        "urgency_label": URGENCY_LABELS.get(data.urgency, "Modérée"),
+        "mode": "emergency" if is_emergency else "standard",
+        "diagnosis": data.diagnosis,
+        "price_min": data.price_min,
+        "price_max": data.price_max,
+        "client_lat": client_lat,
+        "client_lng": client_lng,
+        "candidates": candidates,
+        "candidate_index": 0,
+        "notified_pros": notified_pros,
+        "top_matches": top_matches,
+        "artisan": top_matches[0],
+        "status": "searching" if is_emergency else "proposed",
+        "eta_minutes": None,
+        "accepted_at": None,
+        "accepted_by": None,
+        "created_at": now_utc().isoformat(),
+    }
+    await db.missions.insert_one(mission)
+    mission.pop("_id", None)
+    return mission
 
-DEPOSIT_MIN_CENTS = 3000        # 30€
-DEPOSIT_MAX_CENTS = 30000       # 300€
-DEPOSIT_PERCENT = 30            # 30%
-
-
-def _compute_deposit_cents(avg_cents: int) -> int:
-    """Deposit = 30% of the average estimated price, clamped 30€..300€."""
-    if not avg_cents or avg_cents <= 0:
-        return DEPOSIT_MIN_CENTS
-    d = int(round(avg_cents * DEPOSIT_PERCENT / 100.0))
-    return max(DEPOSIT_MIN_CENTS, min(DEPOSIT_MAX_CENTS, d))
-
-
-class DepositIntentInput(BaseModel):
-    """Kept in server.py — deposit endpoints are OUT OF Bloc 4 scope."""
-    payment_method: str = "card"
-    save_card: bool = False
-
-
-class DepositConfirmInput(BaseModel):
-    payment_intent_id: str
-
-
-async def annotate_reviewed(rows: list, user_id: str) -> list:
-    """Attach `reviewed=True` on each row where the caller already left a review."""
-    if not rows:
-        return rows
-    booking_ids = [r["booking_id"] for r in rows if r.get("booking_id")]
-    reviews = await db.reviews.find(
-        {"booking_id": {"$in": booking_ids}, "from_user_id": user_id},
-        {"_id": 0, "booking_id": 1},
-    ).to_list(len(booking_ids) or 1)
-    reviewed = {r["booking_id"] for r in reviews}
-    for row in rows:
-        row["reviewed"] = row.get("booking_id") in reviewed
-    return rows
-
-
-async def _append_passport_history(user_id: str, entry: dict) -> None:
-    await db.home_passports.update_one(
-        {"client_id": user_id},
-        {"$push": {"maintenance_history": entry}},
-        upsert=True,
-    )
-
-
-async def _set_candidate(mission: dict, index: int) -> dict:
-    """Advance the mission to the artisan at position `index` in the candidates list."""
-    if index >= len(mission["candidates"]):
-        return None
-    aid = mission["candidates"][index]
-    a = await db.artisan_profiles.find_one({"artisan_id": aid}, {"_id": 0})
-    a = await enrich_artisan(a) if a else None
+@api_router.post("/missions/{mission_id}/book")
+async def book_mission(mission_id: str, data: BookInput, user=Depends(get_current_user)):
+    m = await db.missions.find_one({"mission_id": mission_id}, {"_id": 0})
+    if not m or m["client_id"] != user["user_id"]:
+        raise HTTPException(status_code=404, detail="Mission introuvable")
+    a = await db.artisan_profiles.find_one({"artisan_id": data.artisan_id}, {"_id": 0})
     if not a:
-        return None
+        raise HTTPException(status_code=404, detail="Professionnel introuvable")
+    a = await enrich_artisan(a)
+    a["distance_km"] = round(haversine(m["client_lat"], m["client_lng"], a["lat"], a["lng"]), 1) if a.get("lat") else None
     card = mission_artisan_card(a)
-    await db.missions.update_one(
-        {"mission_id": mission["mission_id"]},
-        {"$set": {"candidate_index": index, "artisan": card, "status": "proposed"}},
-    )
+    card["eta_minutes"] = match_eta(card)
+    a_lat = a.get("lat") if a.get("lat") is not None else m["client_lat"] + 0.05
+    a_lng = a.get("lng") if a.get("lng") is not None else m["client_lng"] + 0.05
+    dist = haversine(a_lat, a_lng, m["client_lat"], m["client_lng"])
+    eta = max(3, min(40, round(dist / 35 * 60)))
+    if dist < 0.1:
+        eta = 6
+    upd = {"status": "en_route", "accepted_at": now_utc().isoformat(), "eta_minutes": eta,
+           "artisan_start_lat": a_lat, "artisan_start_lng": a_lng, "artisan": card}
+    await db.missions.update_one({"mission_id": mission_id}, {"$set": upd})
+    m.update(upd)
+    return m
+
+async def _set_candidate(mission: dict, idx: int):
+    aid = mission["candidates"][idx]
+    a = await db.artisan_profiles.find_one({"artisan_id": aid}, {"_id": 0})
+    a = await enrich_artisan(a)
+    ctx = {"lat": mission["client_lat"], "lng": mission["client_lng"], "urgency": mission.get("urgency", "moyenne")}
+    s, breakdown, d = matching.score(a, ctx)
+    a["match_score"] = s
+    a["score_breakdown"] = breakdown
+    a["distance_km"] = d
+    card = mission_artisan_card(a)
+    await db.missions.update_one({"mission_id": mission["mission_id"]}, {"$set": {"candidate_index": idx, "artisan": card, "status": "proposed"}})
     return card
 
+@api_router.post("/missions/{mission_id}/refuse")
+async def refuse_mission(mission_id: str, user=Depends(get_current_user)):
+    m = await db.missions.find_one({"mission_id": mission_id}, {"_id": 0})
+    if not m or m["client_id"] != user["user_id"]:
+        raise HTTPException(status_code=404, detail="Mission introuvable")
+    nxt = m["candidate_index"] + 1
+    if nxt >= len(m["candidates"]):
+        await db.missions.update_one({"mission_id": mission_id}, {"$set": {"status": "no_pro"}})
+        return {"status": "no_pro"}
+    card = await _set_candidate(m, nxt)
+    return {"status": "proposed", "artisan": card}
+
+@api_router.post("/missions/{mission_id}/confirm")
+async def confirm_mission(mission_id: str, user=Depends(get_current_user)):
+    m = await db.missions.find_one({"mission_id": mission_id}, {"_id": 0})
+    if not m or m["client_id"] != user["user_id"]:
+        raise HTTPException(status_code=404, detail="Mission introuvable")
+    a = m["artisan"]
+    a_lat = a.get("lat") if a.get("lat") is not None else m["client_lat"] + 0.05
+    a_lng = a.get("lng") if a.get("lng") is not None else m["client_lng"] + 0.05
+    dist = haversine(a_lat, a_lng, m["client_lat"], m["client_lng"])
+    eta = max(3, min(40, round(dist / 35 * 60)))
+    if dist < 0.1:
+        eta = 6
+    upd = {
+        "status": "en_route",
+        "accepted_at": now_utc().isoformat(),
+        "eta_minutes": eta,
+        "artisan_start_lat": a_lat,
+        "artisan_start_lng": a_lng,
+    }
+    await db.missions.update_one({"mission_id": mission_id}, {"$set": upd})
+    m.update(upd)
+    return m
+
+@api_router.get("/missions/mine")
+async def my_missions(user=Depends(get_current_user)):
+    ms = await db.missions.find({"client_id": user["user_id"]}, {"_id": 0}).to_list(500)
+    ms.sort(key=lambda x: x.get("created_at", ""), reverse=True)
+    return ms
+
+@api_router.get("/missions/{mission_id}")
+async def get_mission(mission_id: str, user=Depends(get_current_user)):
+    m = await db.missions.find_one({"mission_id": mission_id}, {"_id": 0})
+    if not m or m["client_id"] != user["user_id"]:
+        raise HTTPException(status_code=404, detail="Mission introuvable")
+    if m.get("status") in ("en_route", "arrived") and m.get("accepted_at"):
+        accepted = datetime.fromisoformat(m["accepted_at"])
+        if accepted.tzinfo is None:
+            accepted = accepted.replace(tzinfo=timezone.utc)
+        elapsed_min = (now_utc() - accepted).total_seconds() / 60.0
+        eta = m.get("eta_minutes") or 8
+        prog = min(1.0, elapsed_min / eta) if eta > 0 else 1.0
+        slat = m.get("artisan_start_lat", m["client_lat"])
+        slng = m.get("artisan_start_lng", m["client_lng"])
+        m["current_lat"] = slat + (m["client_lat"] - slat) * prog
+        m["current_lng"] = slng + (m["client_lng"] - slng) * prog
+        m["eta_remaining"] = max(0, round(eta * (1 - prog)))
+        if prog >= 1 and m["status"] == "en_route":
+            m["status"] = "arrived"
+            await db.missions.update_one({"mission_id": mission_id}, {"$set": {"status": "arrived"}})
+    return m
 
 @api_router.post("/missions/{mission_id}/complete")
 async def complete_mission(mission_id: str, user=Depends(get_current_user)):
@@ -804,10 +952,56 @@ async def complete_mission(mission_id: str, user=Depends(get_current_user)):
     invoice.pop("_id", None)
     return {"status": "completed", "invoice_id": invoice["invoice_id"], "guarantee_id": guarantee["guarantee_id"]}
 
+# ----------------------------- Emergency mode (first-to-accept wins) -----------------------------
 
-# NOTE: Legacy `GET /home-passport` was accidentally trimmed during Bloc 4
-# sed cleanup. A comprehensive `/properties/*` set replaces this old endpoint
-# in Sprint Home OS (see routes/homes above). The orphan tail below is removed.
+@api_router.post("/missions/{mission_id}/pro_accept")
+async def pro_accept_mission(mission_id: str, data: ProAcceptInput):
+    """Called by a notified pro in emergency mode. First valid acceptance wins;
+    later attempts get 409. (Pro-side auth handled by their app; open here so
+    the broadcast/accept architecture can be exercised.)"""
+    m = await db.missions.find_one({"mission_id": mission_id}, {"_id": 0})
+    if not m:
+        raise HTTPException(status_code=404, detail="Mission introuvable")
+    if m.get("mode") != "emergency":
+        raise HTTPException(status_code=400, detail="Cette mission n'est pas en mode urgence")
+    if data.artisan_id not in (m.get("notified_pros") or []):
+        raise HTTPException(status_code=403, detail="Professionnel non sollicité pour cette urgence")
+    if m.get("accepted_by"):
+        raise HTTPException(status_code=409, detail="Mission déjà acceptée par un autre professionnel")
+    a = await db.artisan_profiles.find_one({"artisan_id": data.artisan_id}, {"_id": 0})
+    if not a:
+        raise HTTPException(status_code=404, detail="Professionnel introuvable")
+    a = await enrich_artisan(a)
+    ctx = {"lat": m["client_lat"], "lng": m["client_lng"], "urgency": "urgence"}
+    s, breakdown, d = matching.score(a, ctx)
+    a["match_score"] = s
+    a["score_breakdown"] = breakdown
+    a["distance_km"] = d
+    card = mission_artisan_card(a)
+    a_lat = a.get("lat") if a.get("lat") is not None else m["client_lat"] + 0.05
+    a_lng = a.get("lng") if a.get("lng") is not None else m["client_lng"] + 0.05
+    dist = haversine(a_lat, a_lng, m["client_lat"], m["client_lng"])
+    eta = max(3, min(40, round(dist / 35 * 60))) if dist >= 0.1 else 6
+    upd = {"status": "en_route", "accepted_at": now_utc().isoformat(), "accepted_by": data.artisan_id,
+           "eta_minutes": eta, "artisan_start_lat": a_lat, "artisan_start_lng": a_lng, "artisan": card}
+    res = await db.missions.update_one(
+        {"mission_id": mission_id, "accepted_by": None},
+        {"$set": upd},
+    )
+    if res.modified_count == 0:
+        raise HTTPException(status_code=409, detail="Mission déjà acceptée par un autre professionnel")
+    return {"status": "en_route", "artisan": card, "eta_minutes": eta}
+
+
+# ----------------------------- Home Passport / Invoices / Guarantees -----------------------------
+
+async def _append_passport_history(client_id: str, entry: dict):
+    await db.home_passports.update_one(
+        {"client_id": client_id},
+        {"$setOnInsert": {"client_id": client_id, "created_at": now_utc().isoformat()},
+         "$push": {"maintenance_history": {"$each": [entry], "$position": 0}}},
+        upsert=True,
+    )
 
 @api_router.get("/home-passport")
 async def get_home_passport(user=Depends(get_current_user)):
@@ -821,7 +1015,6 @@ async def get_home_passport(user=Depends(get_current_user)):
     guarantees.sort(key=lambda x: x.get("starts_at", ""), reverse=True)
     p["guarantees"] = guarantees
     return p
-
 
 @api_router.post("/home-passport/equipment")
 async def add_equipment(data: EquipmentInput, user=Depends(get_current_user)):
@@ -3096,6 +3289,133 @@ async def _artisans_nearby_impl(lat, lng, radius, category, only_available_now, 
     return {"artisans": enriched[:limit], "radius_km": radius, "total": len(enriched)}
 
 
+# Instant intervention flow
+@api_router.post("/interventions/request")
+async def request_intervention(data: InterventionRequestInput, user=Depends(get_current_user)):
+    artisan = await db.artisan_profiles.find_one({"artisan_id": data.artisan_id})
+    if not artisan:
+        raise HTTPException(status_code=404, detail="Artisan introuvable")
+    iv_id = new_id("iv")
+    doc = {
+        "intervention_id": iv_id,
+        "client_id": user["user_id"],
+        "client_name": user.get("name", "Client"),
+        "artisan_id": data.artisan_id,
+        "artisan_user_id": artisan.get("user_id"),
+        "description": data.description[:800],
+        "lat": data.lat,
+        "lng": data.lng,
+        "trade": data.trade or artisan.get("trade"),
+        "urgency": data.urgency,
+        "price_estimate_min": data.price_estimate_min,
+        "price_estimate_max": data.price_estimate_max,
+        "status": "pending",
+        "created_at": now_utc().isoformat(),
+    }
+    await db.interventions.insert_one(doc)
+    doc.pop("_id", None)
+    return doc
+
+
+@api_router.get("/interventions/mine")
+async def my_interventions(user=Depends(get_current_user)):
+    if user.get("role") == "artisan":
+        profile = await db.artisan_profiles.find_one({"user_id": user["user_id"]})
+        aid = profile.get("artisan_id") if profile else None
+        cursor = db.interventions.find({"artisan_id": aid}, {"_id": 0}).sort("created_at", -1).limit(50)
+    else:
+        cursor = db.interventions.find({"client_id": user["user_id"]}, {"_id": 0}).sort("created_at", -1).limit(50)
+    return await cursor.to_list(50)
+
+
+@api_router.get("/interventions/{iv_id}")
+async def get_intervention(iv_id: str, user=Depends(get_current_user)):
+    iv = await db.interventions.find_one({"intervention_id": iv_id}, {"_id": 0})
+    if not iv:
+        raise HTTPException(status_code=404, detail="Introuvable")
+    if user["user_id"] not in (iv.get("client_id"), iv.get("artisan_user_id")):
+        raise HTTPException(status_code=403, detail="Accès refusé")
+    return iv
+
+
+@api_router.post("/interventions/{iv_id}/accept")
+async def accept_intervention(iv_id: str, user=Depends(get_current_user)):
+    iv = await db.interventions.find_one({"intervention_id": iv_id})
+    if not iv:
+        raise HTTPException(status_code=404, detail="Introuvable")
+    if iv.get("artisan_user_id") != user["user_id"]:
+        raise HTTPException(status_code=403, detail="Réservé à l'artisan concerné")
+    await db.interventions.update_one(
+        {"intervention_id": iv_id},
+        {"$set": {"status": "accepted", "accepted_at": now_utc().isoformat()}},
+    )
+    return {"ok": True, "status": "accepted"}
+
+
+@api_router.post("/interventions/{iv_id}/refuse")
+async def refuse_intervention(iv_id: str, data: InterventionActionInput, user=Depends(get_current_user)):
+    iv = await db.interventions.find_one({"intervention_id": iv_id})
+    if not iv:
+        raise HTTPException(status_code=404, detail="Introuvable")
+    if iv.get("artisan_user_id") != user["user_id"]:
+        raise HTTPException(status_code=403, detail="Réservé à l'artisan concerné")
+    await db.interventions.update_one(
+        {"intervention_id": iv_id},
+        {"$set": {"status": "refused", "refused_at": now_utc().isoformat(), "refuse_reason": data.reason}},
+    )
+    return {"ok": True, "status": "refused"}
+
+
+@api_router.post("/interventions/{iv_id}/cancel")
+async def cancel_intervention(iv_id: str, user=Depends(get_current_user)):
+    iv = await db.interventions.find_one({"intervention_id": iv_id})
+    if not iv:
+        raise HTTPException(status_code=404, detail="Introuvable")
+    if iv.get("client_id") != user["user_id"]:
+        raise HTTPException(status_code=403, detail="Réservé au client")
+    await db.interventions.update_one(
+        {"intervention_id": iv_id},
+        {"$set": {"status": "cancelled", "cancelled_at": now_utc().isoformat()}},
+    )
+    return {"ok": True, "status": "cancelled"}
+
+
+
+
+
+
+
+# ----- Calendar OAuth (architecture stubs — real Google/Outlook to be added) -----
+@api_router.get("/calendar/oauth/status")
+async def calendar_oauth_status(user=Depends(get_current_user)):
+    profile = await db.artisan_profiles.find_one({"user_id": user["user_id"]}, {"_id": 0}) or {}
+    return {
+        "connected": bool(profile.get("calendar_connected")),
+        "provider": profile.get("calendar_provider"),
+        "note": "Google/Outlook OAuth réel disponible dans un prochain sprint. Actuellement en mode démo/manuel.",
+    }
+
+
+# ----- Intervention Deposit (Stripe: Apple Pay + Card) -----
+DEPOSIT_MIN_CENTS = 1500   # 15 €
+DEPOSIT_MAX_CENTS = 3000   # 30 €
+DEPOSIT_PERCENT = 0.10     # 10% of estimated price
+
+class DepositIntentInput(BaseModel):
+    payment_method: Optional[str] = None  # "card" | "apple_pay" | None
+
+class DepositConfirmInput(BaseModel):
+    payment_intent_id: Optional[str] = None
+
+
+def _compute_deposit_cents(iv: Dict[str, Any]) -> int:
+    est_min = iv.get("price_estimate_min") or 0
+    est_max = iv.get("price_estimate_max") or 0
+    avg = (est_min + est_max) / 2 if (est_min or est_max) else 200
+    amount = int(avg * 100 * DEPOSIT_PERCENT)
+    return max(DEPOSIT_MIN_CENTS, min(DEPOSIT_MAX_CENTS, amount))
+
+
 @api_router.post("/interventions/{iv_id}/deposit/create")
 async def create_deposit_intent(iv_id: str, data: DepositIntentInput, user=Depends(get_current_user)):
     iv = await db.interventions.find_one({"intervention_id": iv_id})
@@ -3588,28 +3908,6 @@ app.include_router(_modular_auth, prefix="/api")
 app.include_router(_modular_security, prefix="/api")
 app.include_router(_modular_users, prefix="/api")
 app.include_router(_modular_artisans, prefix="/api")
-
-# Bloc 4 — bookings, missions, interventions
-_modular_bookings = build_bookings_router(
-    db, _get_current_user,
-    enrich_artisan=enrich_artisan,
-    annotate_reviewed=annotate_reviewed,
-    add_points=_add_points,
-    trust_engine=trust_engine,
-)
-_modular_missions = build_missions_router(
-    db, _get_current_user,
-    enrich_artisan=enrich_artisan,
-    matching=matching,
-    haversine=haversine,
-    match_eta=match_eta,
-    mission_artisan_card=mission_artisan_card,
-    set_candidate_impl=_set_candidate,
-)
-_modular_interventions = build_interventions_router(db, _get_current_user)
-app.include_router(_modular_bookings, prefix="/api")
-app.include_router(_modular_missions, prefix="/api")
-app.include_router(_modular_interventions, prefix="/api")
 
 app.add_middleware(
     CORSMiddleware,

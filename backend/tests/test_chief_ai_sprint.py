@@ -214,33 +214,33 @@ class TestProAccept:
         assert r.status_code == 200
         return r.json()
 
-    def test_first_pro_accept_succeeds(self, s, fresh_emergency):
+    def test_first_pro_accept_succeeds(self, s, fresh_emergency, pro_h):
         m = fresh_emergency
         if not m["notified_pros"]:
             pytest.skip("No notified pros to accept")
         first = m["notified_pros"][0]
         r = s.post(f"{BASE}/missions/{m['mission_id']}/pro_accept",
-                   json={"artisan_id": first})
+                   json={"artisan_id": first}, headers=pro_h)
         assert r.status_code == 200, r.text
         body = r.json()
         assert body["status"] == "en_route"
         assert isinstance(body["eta_minutes"], int) and body["eta_minutes"] >= 1
         assert body["artisan"]["artisan_id"] == first
 
-    def test_second_pro_accept_returns_409(self, s, fresh_emergency):
+    def test_second_pro_accept_returns_409(self, s, fresh_emergency, pro_h):
         m = fresh_emergency
         if len(m["notified_pros"]) < 2:
             pytest.skip("Need >=2 notified pros for race test")
         # first accepts
         r1 = s.post(f"{BASE}/missions/{m['mission_id']}/pro_accept",
-                    json={"artisan_id": m["notified_pros"][0]})
+                    json={"artisan_id": m["notified_pros"][0]}, headers=pro_h)
         assert r1.status_code == 200
         # second accepts -> 409
         r2 = s.post(f"{BASE}/missions/{m['mission_id']}/pro_accept",
-                    json={"artisan_id": m["notified_pros"][1]})
+                    json={"artisan_id": m["notified_pros"][1]}, headers=pro_h)
         assert r2.status_code == 409, r2.text
 
-    def test_non_notified_pro_returns_403(self, s, fresh_emergency):
+    def test_non_notified_pro_returns_403(self, s, fresh_emergency, pro_h):
         m = fresh_emergency
         # Mission is for plombier — pick an artisan from a different trade
         # (electricien), guaranteed NOT to be in notified_pros for a plombier mission.
@@ -249,21 +249,21 @@ class TestProAccept:
                      if a["artisan_id"] not in m["notified_pros"]]
         assert outsiders, "Expected at least one non-notified artisan"
         r = s.post(f"{BASE}/missions/{m['mission_id']}/pro_accept",
-                   json={"artisan_id": outsiders[0]})
+                   json={"artisan_id": outsiders[0]}, headers=pro_h)
         assert r.status_code == 403, r.text
 
-    def test_non_emergency_mission_returns_400(self, s, client_h):
+    def test_non_emergency_mission_returns_400(self, s, client_h, pro_h):
         r = s.post(f"{BASE}/missions", json=_mission_payload("moyenne"), headers=client_h)
         m = r.json()
         # pick any artisan
         target = m["artisan"]["artisan_id"]
         r2 = s.post(f"{BASE}/missions/{m['mission_id']}/pro_accept",
-                    json={"artisan_id": target})
+                    json={"artisan_id": target}, headers=pro_h)
         assert r2.status_code == 400, r2.text
 
-    def test_unknown_mission_returns_404(self, s):
+    def test_unknown_mission_returns_404(self, s, pro_h):
         r = s.post(f"{BASE}/missions/msn_doesnotexist/pro_accept",
-                   json={"artisan_id": "art_xxx"})
+                   json={"artisan_id": "art_xxx"}, headers=pro_h)
         assert r.status_code == 404
 
 
