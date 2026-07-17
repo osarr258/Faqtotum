@@ -1,0 +1,47 @@
+{
+  "summary": "Sprint 14 Phase 1 Bloc 3 (artisans router migration + security hardening) verified. Bloc-3 target file passes 26/26. Full suite ran 3 consecutive times: 462 passed, 1 failed each run — the failure is the pre-existing tests/test_enterprise_sprint.py::TestOrganizationsCRUD::test_create_org_valid_and_persists, which is unrelated to Bloc 3 (no `artisan` references in the file, and the diff introduced by Bloc 3 does not touch organizations). All 8 manual security spot checks pass: sensitive-field whitelist enforced, honest initial values (trust_score=0, rating=0, verification_status=pending, simulated=true), unapproved artisan hidden via public GET (404), gallery cross-artisan PATCH/DELETE → 404, client → /calendar/connect and /scoreboard → 404 (legacy contracts), bad calendar provider → 400 (not 422), finance/earnings return simulated=true.",
+  "test_runs": [
+    {"run": 1, "target_bloc3_file": "26 passed", "full_suite": {"passed": 462, "failed": 1, "duration_sec": 77.75}, "failed_tests": ["tests/test_enterprise_sprint.py::TestOrganizationsCRUD::test_create_org_valid_and_persists"]},
+    {"run": 2, "full_suite": {"passed": 462, "failed": 1, "duration_sec": 121.00}, "failed_tests": ["tests/test_enterprise_sprint.py::TestOrganizationsCRUD::test_create_org_valid_and_persists"]},
+    {"run": 3, "full_suite": {"passed": 462, "failed": 1, "duration_sec": 81.99}, "failed_tests": ["tests/test_enterprise_sprint.py::TestOrganizationsCRUD::test_create_org_valid_and_persists"]}
+  ],
+  "manual_spot_checks": {
+    "sensitive_field_whitelist": "PASS — role, trust_score(100→0), rating(5.0→0), reviews_count(999→0), jobs_done(999→0), is_subscribed(true→false), stripe_account_id(hack→None), admin_notes(pwn→None), verification_status(approved→pending), simulated(false→true) all stripped/overridden.",
+    "honest_initial_values": "PASS — new profile: trust_score=0, rating=0.0, verification_status='pending', simulated=true.",
+    "public_visibility_of_pending": "PASS — GET /api/artisans/{id} of pending artisan → 404.",
+    "gallery_ownership": "PASS — artisan B PATCH art A gallery → 404; DELETE → 404.",
+    "finance_earnings_simulated_flag": "PASS — both endpoints return simulated:true.",
+    "client_on_pro_only_404": "PASS — client → /api/artisans/me/calendar/connect → 404; /api/artisans/me/scoreboard → 404.",
+    "bad_provider_returns_400": "PASS — legitimate artisan POST calendar/connect with provider='yahoo_mail' → 400 (not 422)."
+  },
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {
+        "endpoint": "tests/test_enterprise_sprint.py::TestOrganizationsCRUD::test_create_org_valid_and_persists",
+        "issue": "PRE-EXISTING failure, unrelated to Bloc 3. The file contains zero references to `artisan`. Failure asserts a newly created org appears in a listing but the list comes back empty. Deterministic (same failure across 3 consecutive runs). Main agent already reported this was reproducible against the backup_p1_bloc2 restore. Recommend fixing in the enterprise sprint scope, not Bloc 3."
+      }
+    ]
+  },
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": [], "react_native_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_sprint14_p1_bloc3_artisans.py",
+    "/tmp/spot_check_bloc3.py"
+  ],
+  "action_items": [
+    "No Bloc-3 action items — security hardening and migration verified.",
+    "Optionally investigate the pre-existing tests/test_enterprise_sprint.py::TestOrganizationsCRUD::test_create_org_valid_and_persists in a separate task (unrelated to Bloc 3)."
+  ],
+  "critical_code_review_comments": [],
+  "updated_files": [],
+  "success_rate": {
+    "backend_bloc3_target": "100% (26/26)",
+    "backend_full_suite": "99.78% (462/463) — same 1 pre-existing failure deterministically across 3 runs",
+    "frontend": "N/A — not tested per request"
+  },
+  "seed_data_creation": "Spot-check script creates 2 ephemeral artisan accounts + 1 client account per run for isolation. No persistent seed changes.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Sprint 14 P1 Bloc 3 artisans migration + security hardening is GREEN. Only lingering issue in the backend suite is tests/test_enterprise_sprint.py::TestOrganizationsCRUD::test_create_org_valid_and_persists — deterministic, pre-existing, unrelated to artisans/Bloc 3.",
+  "rca_of_issue": "N/A — no Bloc-3 regressions."
+}

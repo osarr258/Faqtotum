@@ -26,7 +26,6 @@ from security.dependencies import get_db_dependency
 from routes.auth import build_auth_router
 from routes.security import build_security_router
 from routes.users import build_users_router
-from routes.artisans import build_artisans_router
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -243,9 +242,8 @@ def haversine(lat1, lon1, lat2, lon2):
 async def get_categories():
     return CATEGORIES
 
+# ----------------------------- Artisan routes -----------------------------
 
-# --- Shared helper still used by many legacy endpoints (bookings, missions,
-# --- disputes, matching). Kept alive until those blocs are migrated too.
 async def enrich_artisan(a: dict):
     a.pop("_id", None)
     cat = CATEGORY_MAP.get(a.get("trade"))
@@ -253,6 +251,136 @@ async def enrich_artisan(a: dict):
     a["trade_icon"] = cat["icon"] if cat else "construct"
     return a
 
+@api_router.get("/artisans")
+async def list_artisans(category: Optional[str] = None, q: Optional[str] = None,
+                        min_rate: Optional[float] = None, max_rate: Optional[float] = None,
+                        min_rating: Optional[float] = None, available: Optional[bool] = None,
+                        lat: Optional[float] = None, lng: Optional[float] = None,
+                        radius: Optional[float] = None, sort: Optional[str] = None):
+    query = {"is_subscribed": True}
+    if category:
+        query["trade"] = category
+    artisans = await db.artisan_profiles.find(query, {"_id": 0}).to_list(500)
+    artisans = [await enrich_artisan(a) for a in artisans]
+    if q:
+        ql = q.lower()
+        artisans = [a for a in artisans if ql in a.get("title", "").lower() or ql in a.get("city", "").lower() or ql in a.get("trade_name", "").lower() or ql in (a.get("name") or "").lower()]
+    if min_rate is not None:
+        artisans = [a for a in artisans if a.get("hourly_rate", 0) >= min_rate]
+    if max_rate is not None:
+        artisans = [a for a in artisans if a.get("hourly_rate", 0) <= max_rate]
+    if min_rating is not None:
+        artisans = [a for a in artisans if a.get("rating", 0) >= min_rating]
+    if available is not None:
+        artisans = [a for a in artisans if a.get("available", True) == available]
+    if lat is not None and lng is not None:
+        for a in artisans:
+            if a.get("lat") is not None and a.get("lng") is not None:
+                a["distance_km"] = round(haversine(lat, lng, a["lat"], a["lng"]), 1)
+            else:
+                a["distance_km"] = None
+        if radius is not None:
+            artisans = [a for a in artisans if a.get("distance_km") is not None and a["distance_km"] <= radius]
+    if sort == "rate_asc":
+        artisans.sort(key=lambda x: x.get("hourly_rate", 0))
+    elif sort == "rate_desc":
+        artisans.sort(key=lambda x: x.get("hourly_rate", 0), reverse=True)
+    elif sort == "distance" and lat is not None:
+        artisans.sort(key=lambda x: x.get("distance_km") if x.get("distance_km") is not None else 1e9)
+    else:
+        artisans.sort(key=lambda x: x.get("rating", 0), reverse=True)
+    return artisans
+
+@api_router.get("/artisans/top")
+async def top_artisans():
+    artisans = await db.artisan_profiles.find({"is_subscribed": True}, {"_id": 0}).to_list(500)
+    artisans = [await enrich_artisan(a) for a in artisans]
+    artisans.sort(key=lambda x: x.get("rating", 0), reverse=True)
+    return artisans[:8]
+
+@api_router.get("/artisans/me")
+async def my_artisan_profile(user=Depends(get_current_user)):
+    profile = await db.artisan_profiles.find_one({"user_id": user["user_id"]}, {"_id": 0})
+    if not profile:
+        return None
+    return await enrich_artisan(profile)
+
+@api_router.post("/artisans/me")
+async def upsert_artisan_profile(data: ArtisanProfileInput, user=Depends(get_current_user)):
+    if user["role"] != "artisan":
+        raise HTTPException(status_code=403, detail="Réservé aux artisans")
+    existing = await db.artisan_profiles.find_one({"user_id": user["user_id"]})
+    cat = CATEGORY_MAP.get(data.trade)
+    coords = CITY_COORDS.get(data.city)
+    payload = {
+        "trade": data.trade,
+        "trade_name": cat["name"] if cat else data.trade,
+        "title": data.title,
+        "bio": data.bio,
+        "city": data.city,
+        "hourly_rate": data.hourly_rate,
+        "photo": data.photo,
+        "phone": data.phone,
+        "name": user["name"],
+        "available": data.available,
+        "lat": coords[0] if coords else None,
+        "lng": coords[1] if coords else None,
+    }
+    if existing:
+        await db.artisan_profiles.update_one({"artisan_id": existing["artisan_id"]}, {"$set": {**payload, "last_active_at": now_utc().isoformat()}})
+        profile = await db.artisan_profiles.find_one({"artisan_id": existing["artisan_id"]}, {"_id": 0})
+    else:
+        artisan_id = new_id("art")
+        profile = {
+            "artisan_id": artisan_id,
+            "user_id": user["user_id"],
+            "rating": 5.0,
+            "reviews_count": 0,
+            "base_rating": 0,
+            "base_reviews_count": 0,
+            "trust_score": 80,
+            "acceptance_rate": 100,
+            "completion_rate": 100,
+            "cancellation_rate": 0,
+            "response_min": 20,
+            "jobs_done": 0,
+            "identity_verified": False,
+            "insurance_verified": False,
+            "business_registered": False,
+            "background_checked": False,
+            "years_experience": 0,
+            "avg_arrival_min": 45,
+            "punctuality_rate": 100,
+            "satisfaction_rate": 90,
+            "emergency_capable": False,
+            "disputes_unresolved": 0,
+            "disputes_resolved": 0,
+            "member_since": now_utc().isoformat(),
+            "last_active_at": now_utc().isoformat(),
+            "calendar_connected": False,
+            "is_subscribed": False,
+            "subscription_expires": None,
+            "created_at": now_utc().isoformat(),
+            **payload,
+        }
+        await db.artisan_profiles.insert_one(profile)
+        profile.pop("_id", None)
+    # Trust Engine — recompute after any profile change.
+    await trust_engine.persist(db, profile["artisan_id"])
+    profile = await db.artisan_profiles.find_one({"artisan_id": profile["artisan_id"]}, {"_id": 0})
+    return await enrich_artisan(profile)
+
+@api_router.post("/artisans/me/subscribe")
+async def subscribe(user=Depends(get_current_user)):
+    profile = await db.artisan_profiles.find_one({"user_id": user["user_id"]})
+    if not profile:
+        raise HTTPException(status_code=404, detail="Créez d'abord votre profil")
+    expires = (now_utc() + timedelta(days=30)).isoformat()
+    await db.artisan_profiles.update_one(
+        {"artisan_id": profile["artisan_id"]},
+        {"$set": {"is_subscribed": True, "subscription_expires": expires}},
+    )
+    return {"ok": True, "subscription_expires": expires}
 
 # Literal route defined BEFORE the parameterized /artisans/{artisan_id}
 @api_router.get("/artisans/nearby")
@@ -265,6 +393,22 @@ async def artisans_nearby_early(
     limit: int = 30,
 ):
     return await _artisans_nearby_impl(lat, lng, radius, category, only_available_now, limit)
+
+@api_router.get("/artisans/{artisan_id}")
+async def get_artisan(artisan_id: str):
+    artisan = await db.artisan_profiles.find_one({"artisan_id": artisan_id}, {"_id": 0})
+    if not artisan:
+        raise HTTPException(status_code=404, detail="Artisan introuvable")
+    enriched = await enrich_artisan(artisan)
+    # Attach the Trust confidence card so the profile screen can display badges + reasons.
+    try:
+        out = trust_engine.compute(artisan)
+        enriched["confidence_card"] = trust_engine.confidence_card(artisan, out)
+        enriched["badges"] = trust_engine.badges(artisan, out["trust_score"])
+        enriched["trust_score"] = out["trust_score"]
+    except Exception as e:
+        logger.warning(f"trust card computation failed: {e}")
+    return enriched
 
 # ----------------------------- Booking routes -----------------------------
 
@@ -992,6 +1136,45 @@ async def pro_accept_mission(mission_id: str, data: ProAcceptInput):
         raise HTTPException(status_code=409, detail="Mission déjà acceptée par un autre professionnel")
     return {"status": "en_route", "artisan": card, "eta_minutes": eta}
 
+# ----------------------------- Calendar sync (architecture, MOCKED) -----------------------------
+
+@api_router.get("/artisans/{artisan_id}/availability")
+async def artisan_availability(artisan_id: str, days: int = 7):
+    artisan = await db.artisan_profiles.find_one({"artisan_id": artisan_id}, {"_id": 0})
+    if not artisan:
+        raise HTTPException(status_code=404, detail="Artisan introuvable")
+    # Pull our own bookings to mark those slots busy (best-effort).
+    bks = await db.bookings.find({"artisan_id": artisan_id, "status": {"$in": ["pending", "accepted"]}}, {"_id": 0}).to_list(500)
+    busy = []
+    for b in bks:
+        try:
+            busy.append({"date": b.get("date"), "hour": int((b.get("slot") or "0").split(":")[0])})
+        except Exception:
+            pass
+    calendar = calendar_sync.generate_availability(artisan_id, days=days, busy=busy)
+    nxt = calendar_sync.next_available(artisan_id, days=days, busy=busy)
+    return {
+        "artisan_id": artisan_id,
+        "calendar_connected": bool(artisan.get("calendar_connected")),
+        "provider": artisan.get("calendar_provider"),
+        "next_available": nxt,
+        "days": calendar,
+    }
+
+@api_router.post("/artisans/me/calendar/connect")
+async def connect_calendar(data: CalendarConnectInput, user=Depends(get_current_user)):
+    profile = await db.artisan_profiles.find_one({"user_id": user["user_id"]})
+    if not profile:
+        raise HTTPException(status_code=404, detail="Créez d'abord votre profil")
+    try:
+        conn = calendar_sync.connect_provider(data.provider)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    await db.artisan_profiles.update_one(
+        {"artisan_id": profile["artisan_id"]},
+        {"$set": {"calendar_connected": True, "calendar_provider": conn["provider"], "calendar_connection": conn}},
+    )
+    return conn
 
 # ----------------------------- Home Passport / Invoices / Guarantees -----------------------------
 
@@ -1204,6 +1387,15 @@ async def artisan_badges(artisan_id: str):
     a = await _load_artisan(artisan_id)
     ts = a.get("trust_score") or trust_engine.compute(a)["trust_score"]
     return {"artisan_id": artisan_id, "badges": trust_engine.badges(a, ts)}
+
+@api_router.get("/artisans/me/scoreboard")
+async def my_scoreboard(user=Depends(get_current_user)):
+    """Pro-facing: how the trust score is built + improvements."""
+    a = await db.artisan_profiles.find_one({"user_id": user["user_id"]}, {"_id": 0})
+    if not a:
+        raise HTTPException(status_code=404, detail="Profil artisan introuvable")
+    out = trust_engine.compute(a)
+    return trust_engine.scoreboard(a, out)
 
 @api_router.post("/artisans/{artisan_id}/recompute-trust")
 async def recompute_trust(artisan_id: str, user=Depends(get_current_user)):
@@ -1441,10 +1633,53 @@ async def redeem_referral(body: ReferralRedeemInput, user=Depends(get_current_us
     await _add_points(user["user_id"], "referral_converted", amount=200)  # smaller welcome bonus
     return {"ok": True}
 
+# --------------- Pro Levels & Achievements ---------------
+@api_router.get("/artisans/{aid}/level")
+async def artisan_level(aid: str):
+    a = await db.artisan_profiles.find_one({"artisan_id": aid}, {"_id": 0})
+    if not a:
+        raise HTTPException(status_code=404, detail="Artisan introuvable")
+    lvl = growth.pro_level(a.get("trust_score") or 0, a.get("jobs_done") or 0)
+    return {"artisan_id": aid, **lvl}
+
 @api_router.get("/growth/levels")
 async def growth_levels_catalog():
     return growth.LEVELS
 
+# --------------- Before/After Gallery ---------------
+@api_router.get("/artisans/{aid}/gallery")
+async def artisan_gallery(aid: str):
+    return await db.gallery_projects.find({"artisan_id": aid}, {"_id": 0}).sort("created_at", -1).to_list(200)
+
+@api_router.post("/artisans/me/gallery")
+async def add_gallery_project(body: GalleryProjectInput, user=Depends(get_current_user)):
+    if user.get("role") != "artisan":
+        raise HTTPException(status_code=403, detail="Réservé aux artisans")
+    profile = await db.artisan_profiles.find_one({"user_id": user["user_id"]}, {"_id": 0})
+    if not profile:
+        raise HTTPException(status_code=400, detail="Profil pro introuvable")
+    doc = {
+        "project_id": new_id("gal"),
+        "artisan_id": profile["artisan_id"],
+        "title": body.title.strip(),
+        "description": body.description or "",
+        "trade": body.trade or profile.get("trade"),
+        "before_photos": body.before_photos[:6],
+        "after_photos": body.after_photos[:6],
+        "created_at": now_utc().isoformat(),
+    }
+    await db.gallery_projects.insert_one(dict(doc))
+    return doc
+
+@api_router.delete("/artisans/me/gallery/{project_id}")
+async def delete_gallery_project(project_id: str, user=Depends(get_current_user)):
+    if user.get("role") != "artisan":
+        raise HTTPException(status_code=403, detail="Réservé aux artisans")
+    profile = await db.artisan_profiles.find_one({"user_id": user["user_id"]}, {"_id": 0, "artisan_id": 1})
+    if not profile:
+        raise HTTPException(status_code=404, detail="Profil introuvable")
+    await db.gallery_projects.delete_one({"project_id": project_id, "artisan_id": profile["artisan_id"]})
+    return {"ok": True}
 
 # --------------- Property Health & Maintenance Planner ---------------
 @api_router.get("/properties/{pid}/health")
@@ -2316,6 +2551,24 @@ async def mark_module_interest(module_key: str, user=Depends(get_current_user)):
     )
     return {"ok": True, "status": "waitlist_registered"}
 
+# ---------- Portfolio (project) — extends existing gallery ----------
+# The Growth sprint already exposes /artisans/{aid}/gallery + POST /artisans/me/gallery.
+# We add a richer PATCH here for pros to attach city/duration/review_link.
+class PortfolioPatchInput(BaseModel):
+    description: Optional[str] = None
+    city: Optional[str] = None
+    duration_hours: Optional[float] = None
+    completed_at: Optional[str] = None
+    review_id: Optional[str] = None
+
+@api_router.patch("/artisans/me/gallery/{project_id}")
+async def patch_gallery(project_id: str, body: PortfolioPatchInput, user=Depends(get_current_user)):
+    prof = await _require_pro(user)
+    updates = {k: v for k, v in body.dict(exclude_none=True).items()}
+    updates["updated_at"] = now_utc().isoformat()
+    await db.gallery_projects.update_one({"project_id": project_id, "artisan_id": prof["artisan_id"]}, {"$set": updates})
+    return await db.gallery_projects.find_one({"project_id": project_id}, {"_id": 0})
+
 # ============================================================
 # CONFIGURATION
 # ============================================================
@@ -2658,6 +2911,47 @@ async def my_subscription(user=Depends(get_current_user)):
     if not row:
         return {"plan_key": "starter", "status": "active"}
     return row
+
+# ---------- Professional finance dashboard ----------
+@api_router.get("/artisans/me/finance")
+async def artisan_finance(user=Depends(get_current_user)):
+    if user.get("role") != "artisan":
+        raise HTTPException(status_code=403, detail="Réservé aux artisans")
+    profile = await db.artisan_profiles.find_one({"user_id": user["user_id"]}, {"_id": 0})
+    if not profile:
+        raise HTTPException(status_code=404, detail="Profil introuvable")
+    aid = profile["artisan_id"]
+    transfers = await db.transfers.find({"artisan_id": aid}, {"_id": 0}).sort("created_at", -1).to_list(500)
+    revenue = sum(t.get("net_cents", 0) for t in transfers)
+    commissions = sum(t.get("commission_cents", 0) for t in transfers)
+    gross = sum(t.get("gross_cents", 0) for t in transfers)
+    pending = await db.escrows.aggregate([
+        {"$match": {"artisan_id": aid, "state": "held"}},
+        {"$group": {"_id": None, "total": {"$sum": "$amount_cents"}, "count": {"$sum": 1}}},
+    ]).to_list(1)
+    pending_total = pending[0]["total"] if pending else 0
+    pending_count = pending[0]["count"] if pending else 0
+
+    # Monthly evolution (last 6 months, YYYY-MM buckets).
+    monthly: Dict[str, int] = {}
+    for t in transfers:
+        key = (t.get("created_at") or "")[:7]
+        monthly[key] = monthly.get(key, 0) + t.get("net_cents", 0)
+    evolution = [{"month": k, "amount_cents": v} for k, v in sorted(monthly.items())][-6:]
+
+    avg = int(revenue / len(transfers)) if transfers else 0
+    return {
+        "revenue_cents": revenue,
+        "gross_cents": gross,
+        "commissions_cents": commissions,
+        "pending_cents": pending_total,
+        "pending_count": pending_count,
+        "transfers_count": len(transfers),
+        "average_net_cents": avg,
+        "monthly_evolution": evolution,
+        "recent_transfers": transfers[:10],
+    }
+
 # ---------- Admin: commissions ----------
 @api_router.get("/admin/finance/overview")
 async def admin_finance_overview(user=Depends(require_admin)):
@@ -3243,6 +3537,41 @@ def _haversine_km(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
     return R * 2 * _math.atan2(_math.sqrt(a), _math.sqrt(1 - a))
 
 
+# ----- Artisan: publish live position -----
+@api_router.post("/artisans/me/position")
+async def update_position(data: PositionInput, user=Depends(get_current_user)):
+    if user.get("role") != "artisan":
+        raise HTTPException(status_code=403, detail="Réservé aux artisans")
+    profile = await db.artisan_profiles.find_one({"user_id": user["user_id"]})
+    if not profile:
+        raise HTTPException(status_code=404, detail="Créez d'abord votre profil")
+    update = {
+        "live_lat": data.lat,
+        "live_lng": data.lng,
+        "live_updated_at": now_utc().isoformat(),
+    }
+    if data.available_now is not None:
+        update["available_now"] = bool(data.available_now)
+    await db.artisan_profiles.update_one(
+        {"artisan_id": profile["artisan_id"]},
+        {"$set": update},
+    )
+    return {"ok": True, **update}
+
+
+@api_router.post("/artisans/me/available-now")
+async def toggle_available_now(user=Depends(get_current_user)):
+    if user.get("role") != "artisan":
+        raise HTTPException(status_code=403, detail="Réservé aux artisans")
+    profile = await db.artisan_profiles.find_one({"user_id": user["user_id"]})
+    if not profile:
+        raise HTTPException(status_code=404, detail="Créez d'abord votre profil")
+    new_val = not bool(profile.get("available_now"))
+    await db.artisan_profiles.update_one(
+        {"artisan_id": profile["artisan_id"]},
+        {"$set": {"available_now": new_val, "available_now_since": now_utc().isoformat() if new_val else None}},
+    )
+    return {"available_now": new_val}
 
 
 # ----- Client: nearby artisans with live positions -----
@@ -3371,9 +3700,65 @@ async def cancel_intervention(iv_id: str, user=Depends(get_current_user)):
     return {"ok": True, "status": "cancelled"}
 
 
+# ----- Manual slots for artisan -----
+@api_router.post("/artisans/me/slots")
+async def create_slot(data: SlotInput, user=Depends(get_current_user)):
+    if user.get("role") != "artisan":
+        raise HTTPException(status_code=403, detail="Réservé aux artisans")
+    profile = await db.artisan_profiles.find_one({"user_id": user["user_id"]})
+    if not profile:
+        raise HTTPException(status_code=404, detail="Créez d'abord votre profil")
+    slot_id = new_id("slot")
+    doc = {
+        "slot_id": slot_id,
+        "artisan_id": profile["artisan_id"],
+        "date": data.date,
+        "start_time": data.start_time,
+        "duration_min": data.duration_min,
+        "recurring": data.recurring,
+        "booked": False,
+        "created_at": now_utc().isoformat(),
+    }
+    await db.artisan_slots.insert_one(doc)
+    doc.pop("_id", None)
+    return doc
 
 
+@api_router.get("/artisans/me/slots")
+async def list_my_slots(user=Depends(get_current_user)):
+    if user.get("role") != "artisan":
+        raise HTTPException(status_code=403, detail="Réservé aux artisans")
+    profile = await db.artisan_profiles.find_one({"user_id": user["user_id"]})
+    if not profile:
+        return {"slots": []}
+    cursor = db.artisan_slots.find({"artisan_id": profile["artisan_id"]}, {"_id": 0}).sort("date", 1)
+    slots = await cursor.to_list(500)
+    return {"slots": slots}
 
+
+@api_router.delete("/artisans/me/slots/{slot_id}")
+async def delete_slot(slot_id: str, user=Depends(get_current_user)):
+    if user.get("role") != "artisan":
+        raise HTTPException(status_code=403, detail="Réservé aux artisans")
+    profile = await db.artisan_profiles.find_one({"user_id": user["user_id"]})
+    result = await db.artisan_slots.delete_one({
+        "slot_id": slot_id,
+        "artisan_id": profile.get("artisan_id") if profile else None,
+    })
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Créneau introuvable")
+    return {"ok": True}
+
+
+@api_router.get("/artisans/{artisan_id}/slots")
+async def list_artisan_slots(artisan_id: str):
+    today = now_utc().date().isoformat()
+    cursor = db.artisan_slots.find(
+        {"artisan_id": artisan_id, "booked": False, "date": {"$gte": today}},
+        {"_id": 0}
+    ).sort("date", 1)
+    slots = await cursor.to_list(200)
+    return {"slots": slots}
 
 
 # ----- Calendar OAuth (architecture stubs — real Google/Outlook to be added) -----
@@ -3673,8 +4058,39 @@ async def intervention_payment_summary(iv_id: str, user=Depends(get_current_user
     }
 
 
-    event_date: str = Field(..., description="ISO date YYYY-MM-DD")
+# ---------- Artisan earnings summary (Stripe Connect payouts) ----------
+@api_router.get("/artisans/me/earnings")
+async def artisan_earnings(user=Depends(get_current_user)):
+    if user.get("role") != "artisan":
+        raise HTTPException(status_code=403, detail="Réservé aux artisans")
+    profile = await db.artisan_profiles.find_one({"user_id": user["user_id"]}, {"_id": 0})
+    if not profile:
+        return {"total_net": 0, "total_gross": 0, "total_commission": 0, "transfers": []}
+    cursor = db.transfers.find({"artisan_id": profile["artisan_id"]}, {"_id": 0}).sort("created_at", -1).limit(50)
+    transfers = await cursor.to_list(50)
+    total_gross = sum(t.get("gross_cents", 0) for t in transfers)
+    total_net = sum(t.get("net_cents", 0) for t in transfers)
+    total_commission = sum(t.get("commission_cents", 0) for t in transfers)
+    return {
+        "total_gross": total_gross,
+        "total_net": total_net,
+        "total_commission": total_commission,
+        "transfers_count": len(transfers),
+        "transfers": transfers[:10],
+    }
 
+
+
+# ============================================================================
+# Home OS — Additional features on top of existing MY HOME section
+#   * Advanced health score computation (used by /properties/{pid}/insights)
+#   * Budget aggregation (charts data)
+#   * Public passport shareable link
+#   * Auto-generated maintenance reminders on equipment creation
+#   * Manual event log for the budget aggregator
+# The base CRUD (properties, equipment, documents, reminders, timeline) already
+# lives above around line 3205. We only add here what's genuinely new.
+# ============================================================================
 
 class PropertyEventInput(BaseModel):
     event_type: str = Field(..., description="installation|entretien|reparation|controle|nettoyage|sinistre|autre")
@@ -3884,21 +4300,9 @@ app.include_router(api_router)
 _modular_auth = build_auth_router(db, _get_current_user)
 _modular_security = build_security_router(db, _get_current_user, _require_roles)
 _modular_users = build_users_router(db, _get_current_user)
-_modular_artisans = build_artisans_router(
-    db, _get_current_user,
-    enrich_artisan=enrich_artisan,
-    trust_engine=trust_engine,
-    calendar_sync=calendar_sync,
-    growth=growth,
-    category_map=CATEGORY_MAP,
-    city_coords=CITY_COORDS,
-    haversine=haversine,
-    artisans_nearby_impl=_artisans_nearby_impl,
-)
 app.include_router(_modular_auth, prefix="/api")
 app.include_router(_modular_security, prefix="/api")
 app.include_router(_modular_users, prefix="/api")
-app.include_router(_modular_artisans, prefix="/api")
 
 app.add_middleware(
     CORSMiddleware,
