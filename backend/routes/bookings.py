@@ -119,18 +119,17 @@ def build_bookings_router(
 
     @r.get("/bookings/mine")
     async def my_bookings(user=Depends(get_current_user)):
+        # Sort in Mongo (not Python) so newest bookings win when caller has >500 rows.
         bookings = await db.bookings.find(
             {"client_id": user["user_id"]}, {"_id": 0},
-        ).to_list(500)
-        bookings.sort(key=lambda x: x.get("created_at", ""), reverse=True)
+        ).sort("created_at", -1).to_list(500)
         return await annotate_reviewed(bookings, user["user_id"])
 
     @r.get("/bookings/received")
     async def received_bookings(user=Depends(get_current_user)):
         bookings = await db.bookings.find(
             {"artisan_user_id": user["user_id"]}, {"_id": 0},
-        ).to_list(500)
-        bookings.sort(key=lambda x: x.get("created_at", ""), reverse=True)
+        ).sort("created_at", -1).to_list(500)
         return await annotate_reviewed(bookings, user["user_id"])
 
     @r.patch("/bookings/{booking_id}")

@@ -237,11 +237,11 @@ def build_missions_router(
     # ---- GET /missions/mine ---------------------------------------------------
     @r.get("/missions/mine")
     async def my_missions(user=Depends(get_current_user)):
-        ms = await db.missions.find(
+        # Sort in Mongo (not Python) so newest missions win when caller has >500 rows.
+        cursor = db.missions.find(
             {"client_id": user["user_id"]}, {"_id": 0},
-        ).to_list(500)
-        ms.sort(key=lambda x: x.get("created_at", ""), reverse=True)
-        return ms
+        ).sort("created_at", -1)
+        return await cursor.to_list(500)
 
     # ---- GET /missions/{id} ---------------------------------------------------
     @r.get("/missions/{mission_id}")
