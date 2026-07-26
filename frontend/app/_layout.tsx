@@ -12,6 +12,7 @@ import { useIconFonts } from "@/src/hooks/use-icon-fonts";
 import { AuthProvider, useAuth } from "@/src/context/AuthContext";
 import LockScreen from "@/src/components/LockScreen";
 import StripeWrapper from "@/src/components/StripeWrapper";
+import { ThemeProvider } from "@/src/design";
 
 LogBox.ignoreAllLogs(true);
 SplashScreen.preventAutoHideAsync();
@@ -49,8 +50,10 @@ export default function RootLayout() {
         <SafeAreaProvider>
           <StripeWrapper>
             <AuthProvider>
-              <StatusBar style="light" />
-              <GateContent />
+              <ThemeProvider>
+                <StatusBar style="light" />
+                <GateContent />
+              </ThemeProvider>
             </AuthProvider>
           </StripeWrapper>
         </SafeAreaProvider>

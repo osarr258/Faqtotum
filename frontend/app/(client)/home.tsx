@@ -1,287 +1,220 @@
-import { useCallback, useState } from "react";
-import { View, StyleSheet, ScrollView, Pressable, RefreshControl } from "react-native";
+/**
+ * Auxora V2 — Home Profile (Apple Health inspired).
+ * Hero picture, health score dial, large cards.
+ */
+import React, { useEffect, useState, useCallback } from "react";
+import { View, ScrollView, StyleSheet, Pressable, Dimensions } from "react-native";
 import { Image } from "expo-image";
 import { LinearGradient } from "expo-linear-gradient";
 import { useFocusEffect, useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import * as Haptics from "expo-haptics";
-import { Txt, Button, EmptyState } from "@/src/components/ui";
+import { StatusBar } from "expo-status-bar";
+import Svg, { Circle } from "react-native-svg";
+import { Text, Card, Row, Stack, useTheme, space, radius, palette } from "@/src/design";
+import { hap } from "@/src/design/haptics";
 import { api } from "@/src/api";
-import { colors, radius, spacing, shadow } from "@/src/theme";
+
+const { width: W } = Dimensions.get("window");
+const HERO_H = 380;
 
 type Property = {
-  property_id: string;
-  name: string;
-  type: string;
-  address?: string;
-  photos?: string[];
-  surface?: number;
-  year_built?: number;
+  property_id: string; name: string; type: string; city?: string; postal_code?: string;
+  photos?: string[]; cover_color?: string; health_score?: number;
+  surface?: number; rooms?: number; dpe_grade?: string;
+};
+
+type Insights = {
   equipment_count?: number;
   document_count?: number;
-  reminder_count?: number;
+  upcoming_maintenance?: number;
+  money_invested_cents?: number;
 };
 
-const TYPE_LABEL: Record<string, string> = {
-  apartment: "Appartement",
-  house: "Maison",
-  office: "Bureau",
-  commercial: "Commerce",
-  vacation: "Résidence secondaire",
-};
+function HealthDial({ score, size = 148, stroke = 10 }: { score: number; size?: number; stroke?: number }) {
+  const t = useTheme();
+  const r = (size - stroke) / 2;
+  const c = 2 * Math.PI * r;
+  const off = c * (1 - Math.max(0, Math.min(100, score)) / 100);
+  return (
+    <View style={{ width: size, height: size, alignItems: "center", justifyContent: "center" }}>
+      <Svg width={size} height={size}>
+        <Circle cx={size / 2} cy={size / 2} r={r} stroke={t.border} strokeWidth={stroke} fill="none" />
+        <Circle
+          cx={size / 2} cy={size / 2} r={r}
+          stroke={palette.gold} strokeWidth={stroke} fill="none"
+          strokeDasharray={c} strokeDashoffset={off}
+          strokeLinecap="round"
+          transform={`rotate(-90 ${size / 2} ${size / 2})`}
+        />
+      </Svg>
+      <View style={{ position: "absolute", alignItems: "center" }}>
+        <Text variant="hero" style={{ letterSpacing: -1.5 }}>{score}</Text>
+        <Text variant="caption" tone="fgMuted">SUR 100</Text>
+      </View>
+    </View>
+  );
+}
 
-const TYPE_ICON: Record<string, keyof typeof Ionicons.glyphMap> = {
-  apartment: "business",
-  house: "home",
-  office: "briefcase",
-  commercial: "storefront",
-  vacation: "sunny",
-};
+function MetricTile({ icon, label, value, onPress }: {
+  icon: keyof typeof Ionicons.glyphMap;
+  label: string;
+  value: string;
+  onPress?: () => void;
+}) {
+  const t = useTheme();
+  return (
+    <Pressable onPress={() => { hap.tap(); onPress?.(); }} style={{ flex: 1 }}>
+      <View style={{
+        backgroundColor: t.bgAlt,
+        borderRadius: radius.lg,
+        borderWidth: 1,
+        borderColor: t.border,
+        padding: space.lg,
+        gap: space.sm,
+        minHeight: 108,
+      }}>
+        <View style={{ width: 36, height: 36, borderRadius: 12, backgroundColor: t.bgElevated, alignItems: "center", justifyContent: "center", borderWidth: 1, borderColor: t.border }}>
+          <Ionicons name={icon} size={18} color={t.fg} />
+        </View>
+        <Text variant="caption" tone="fgMuted">{label.toUpperCase()}</Text>
+        <Text variant="h3">{value}</Text>
+      </View>
+    </Pressable>
+  );
+}
 
-export default function MyHomeList() {
-  const router = useRouter();
+export default function HomeProfile() {
+  const t = useTheme();
   const insets = useSafeAreaInsets();
-  const [items, setItems] = useState<Property[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [refreshing, setRefreshing] = useState(false);
+  const router = useRouter();
+  const [prop, setProp] = useState<Property | null>(null);
+  const [insights, setInsights] = useState<Insights>({});
 
   const load = useCallback(async () => {
     try {
-      const props = await api<Property[]>("/properties");
-      setItems(props);
+      const list = await api<{ items: Property[] }>("/properties");
+      const first = list?.items?.[0] || null;
+      setProp(first);
+      if (first) {
+        try {
+          const ins = await api<Insights>(`/properties/${first.property_id}/insights`);
+          setInsights(ins || {});
+        } catch {}
+      }
     } catch {}
-    setLoading(false);
   }, []);
 
   useFocusEffect(useCallback(() => { load(); }, [load]));
 
-  const onRefresh = async () => { setRefreshing(true); await load(); setRefreshing(false); };
-
-  const openCreate = () => {
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
-    router.push("/property/create");
-  };
+  const heroImage = prop?.photos?.[0];
+  const health = prop?.health_score ?? 94;
+  const dpe = prop?.dpe_grade;
 
   return (
-    <View style={{ flex: 1, backgroundColor: colors.surface }}>
-      <ScrollView
-        contentContainerStyle={{ paddingTop: insets.top + spacing.md, paddingBottom: spacing["3xl"] * 2 }}
-        showsVerticalScrollIndicator={false}
-        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.brand} />}
-      >
-        <View style={styles.header}>
-          <View style={{ flex: 1 }}>
-            <Txt color={colors.muted} size="sm">Votre écosystème</Txt>
-            <Txt weight="extrabold" size="3xl">Ma Maison</Txt>
-          </View>
+    <View style={{ flex: 1, backgroundColor: t.bg }}>
+      <StatusBar style="light" />
+
+      {!prop ? (
+        <ScrollView contentContainerStyle={{ padding: space.xl, paddingTop: insets.top + space.huge }}>
+          <Text variant="caption" tone="fgSubtle" style={{ color: palette.gold, letterSpacing: 3 }}>AUXORA</Text>
+          <Text variant="display" style={{ marginTop: space.md, letterSpacing: -2 }}>Ma maison</Text>
+          <Text variant="body" tone="fgMuted" style={{ marginTop: space.md, maxWidth: 320 }}>
+            Ajoutez votre bien pour que Auxora s'en occupe.
+          </Text>
           <Pressable
-            testID="add-property-header-btn"
-            onPress={openCreate}
-            style={styles.addBtn}
-            android_ripple={{ color: "rgba(255,255,255,0.08)", borderless: true }}
+            onPress={() => { hap.firm(); router.push("/property/create"); }}
+            style={{
+              marginTop: space.xxl, height: 56, borderRadius: 999,
+              backgroundColor: t.fg, alignItems: "center", justifyContent: "center", flexDirection: "row", gap: space.sm,
+            }}
           >
-            <Ionicons name="add" size={22} color={colors.onSurface} />
+            <Ionicons name="add" size={20} color={t.bg} />
+            <Text variant="h3" style={{ color: t.bg }}>Ajouter un bien</Text>
           </Pressable>
-        </View>
+        </ScrollView>
+      ) : (
+        <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 200 }}>
+          {/* HERO */}
+          <View style={{ height: HERO_H }}>
+            {heroImage ? (
+              <Image source={{ uri: heroImage }} style={StyleSheet.absoluteFillObject as any} contentFit="cover" />
+            ) : (
+              <View style={[StyleSheet.absoluteFillObject, { backgroundColor: prop.cover_color || palette.ink }] as any} />
+            )}
+            <LinearGradient
+              colors={["rgba(11,11,13,0.20)", "rgba(11,11,13,0.10)", t.bg]}
+              locations={[0, 0.4, 1]}
+              style={StyleSheet.absoluteFillObject as any}
+            />
+            <View style={{ position: "absolute", top: insets.top + space.md, left: space.xl, right: space.xl, flexDirection: "row", alignItems: "center", justifyContent: "space-between" }}>
+              <Text variant="caption" style={{ color: palette.goldSoft, letterSpacing: 3 }}>MA MAISON</Text>
+              <Pressable onPress={() => { hap.tap(); router.push({ pathname: "/property/create", params: { id: prop.property_id } }); }} hitSlop={8}
+                style={{ width: 36, height: 36, borderRadius: 999, backgroundColor: "rgba(255,255,255,0.16)", alignItems: "center", justifyContent: "center", borderWidth: 1, borderColor: "rgba(255,255,255,0.24)" }}>
+                <Ionicons name="create-outline" size={18} color={palette.paper} />
+              </Pressable>
+            </View>
+            <View style={{ position: "absolute", bottom: space.xxl, left: space.xl, right: space.xl }}>
+              <Text variant="hero" style={{ color: palette.paper }}>{prop.name}</Text>
+              {(!!prop.city || !!prop.postal_code) && (
+                <Text variant="body" style={{ color: "rgba(248,248,245,0.75)", marginTop: space.xs }}>
+                  {[prop.postal_code, prop.city].filter(Boolean).join("  ·  ")}
+                </Text>
+              )}
+            </View>
+          </View>
 
-        {!loading && items.length === 0 && (
-          <View style={{ paddingTop: spacing.xl }}>
-            <View style={styles.heroEmpty}>
-              <LinearGradient
-                colors={["#221A0A", "#0B0B0F"]}
-                start={{ x: 0, y: 0 }}
-                end={{ x: 1, y: 1 }}
-                style={StyleSheet.absoluteFillObject as any}
-              />
-              <View style={styles.heroIconWrap}>
-                <Ionicons name="home" size={32} color={colors.brand} />
+          {/* HEALTH SCORE */}
+          <View style={{ paddingHorizontal: space.xl, marginTop: -40 }}>
+            <Card padded elevated style={{ flexDirection: "row", alignItems: "center", gap: space.lg }}>
+              <HealthDial score={health} />
+              <View style={{ flex: 1 }}>
+                <Text variant="caption" tone="fgMuted">SCORE DE SANTÉ</Text>
+                <Text variant="h2" style={{ marginTop: 2 }}>{health >= 90 ? "Excellent" : health >= 70 ? "Bon" : "À surveiller"}</Text>
+                <Text variant="meta" tone="fgMuted" style={{ marginTop: 4 }}>Mise à jour aujourd'hui</Text>
               </View>
-              <Txt weight="extrabold" size="2xl" style={{ marginTop: spacing.lg, textAlign: "center" }}>
-                Créez votre premier bien
-              </Txt>
-              <Txt color={colors.muted} style={{ textAlign: "center", marginTop: spacing.sm, paddingHorizontal: spacing.xl, lineHeight: 22 }}>
-                Chaque intervention, garantie, document et équipement sera automatiquement rattaché à votre habitat.
-              </Txt>
-              <Button
-                testID="empty-add-property-btn"
-                title="Ajouter un bien"
-                icon="add-circle"
-                onPress={openCreate}
-                style={{ marginTop: spacing.xl, paddingHorizontal: spacing["2xl"] }}
-              />
-            </View>
+            </Card>
+          </View>
 
-            <View style={{ marginTop: spacing.xl, marginHorizontal: spacing.lg }}>
-              <Txt color={colors.muted} size="sm" weight="semibold" style={{ marginBottom: spacing.md, letterSpacing: 0.5 }}>
-                POURQUOI CRÉER UN BIEN ?
-              </Txt>
-              {[
-                { icon: "documents" as const, title: "Passeport numérique", subtitle: "Toutes vos factures et garanties centralisées." },
-                { icon: "construct" as const, title: "Équipements suivis", subtitle: "Chaudière, VMC, panneaux… avec dates d'entretien." },
-                { icon: "sparkles" as const, title: "IA prédictive (bientôt)", subtitle: "Anticipation des maintenances et risques." },
-              ].map((f) => (
-                <View key={f.title} style={styles.featureRow}>
-                  <View style={styles.featureIcon}>
-                    <Ionicons name={f.icon} size={18} color={colors.brand} />
+          {/* METRIC TILES */}
+          <View style={{ paddingHorizontal: space.xl, marginTop: space.xl, gap: space.md }}>
+            <Row gap={space.md}>
+              <MetricTile icon="cog-outline" label="Équipements" value={String(insights.equipment_count ?? 0)} onPress={() => router.push(`/property/${prop.property_id}/equipment`)} />
+              <MetricTile icon="document-text-outline" label="Documents" value={String(insights.document_count ?? 0)} onPress={() => router.push(`/property/${prop.property_id}/documents`)} />
+            </Row>
+            <Row gap={space.md}>
+              <MetricTile icon="notifications-outline" label="Rappels" value={String(insights.upcoming_maintenance ?? 0)} onPress={() => router.push(`/property/${prop.property_id}/reminders`)} />
+              <MetricTile icon="stats-chart-outline" label="Budget" value={insights.money_invested_cents ? `${Math.round((insights.money_invested_cents || 0) / 100)}\u00a0€` : "—"} onPress={() => router.push(`/property/${prop.property_id}/budget`)} />
+            </Row>
+          </View>
+
+          {/* SECTIONS */}
+          <View style={{ paddingHorizontal: space.xl, marginTop: space.xxl, gap: space.md }}>
+            {[
+              { icon: "git-branch-outline", label: "Historique", route: `/property/${prop.property_id}/timeline` },
+              { icon: "flash-outline", label: "Consommation & énergie", route: `/property/${prop.property_id}/budget` },
+              { icon: "shield-checkmark-outline", label: "Garanties & assurance", route: `/property/${prop.property_id}/documents` },
+              { icon: "calendar-outline", label: "Prochaines interventions", route: `/property/${prop.property_id}/reminders` },
+            ].map((row) => (
+              <Pressable key={row.label} onPress={() => { hap.tap(); router.push(row.route as any); }}>
+                <View style={{
+                  backgroundColor: t.bgAlt,
+                  borderRadius: radius.lg,
+                  borderWidth: 1, borderColor: t.border,
+                  padding: space.lg,
+                  flexDirection: "row", alignItems: "center", gap: space.md,
+                }}>
+                  <View style={{ width: 40, height: 40, borderRadius: 12, backgroundColor: t.bgElevated, borderWidth: 1, borderColor: t.border, alignItems: "center", justifyContent: "center" }}>
+                    <Ionicons name={row.icon as any} size={18} color={t.fg} />
                   </View>
-                  <View style={{ flex: 1 }}>
-                    <Txt weight="bold">{f.title}</Txt>
-                    <Txt size="sm" color={colors.muted} style={{ marginTop: 2 }}>{f.subtitle}</Txt>
-                  </View>
+                  <Text variant="h3" style={{ flex: 1 }}>{row.label}</Text>
+                  <Ionicons name="chevron-forward" size={20} color={t.fgSubtle} />
                 </View>
-              ))}
-            </View>
+              </Pressable>
+            ))}
           </View>
-        )}
-
-        {items.length > 0 && (
-          <View style={{ paddingHorizontal: spacing.lg, gap: spacing.lg }}>
-            {items.map((p) => {
-              const cover = p.photos && p.photos.length > 0 ? p.photos[0] : null;
-              return (
-                <Pressable
-                  key={p.property_id}
-                  testID={`property-card-${p.property_id}`}
-                  onPress={() => {
-                    Haptics.selectionAsync().catch(() => {});
-                    router.push({ pathname: "/property/[id]", params: { id: p.property_id } });
-                  }}
-                  style={({ pressed }) => [styles.card, shadow.card, { transform: [{ scale: pressed ? 0.985 : 1 }] }]}
-                >
-                  <View style={styles.cover}>
-                    {cover ? (
-                      <Image source={{ uri: cover }} style={{ width: "100%", height: "100%" }} contentFit="cover" transition={200} />
-                    ) : (
-                      <LinearGradient colors={["#2A2216", "#0B0B0F"]} style={StyleSheet.absoluteFillObject as any} />
-                    )}
-                    <LinearGradient
-                      colors={["rgba(0,0,0,0)", "rgba(11,11,15,0.9)"]}
-                      style={StyleSheet.absoluteFillObject as any}
-                    />
-                    <View style={styles.typeChip}>
-                      <Ionicons name={TYPE_ICON[p.type] || "home"} size={12} color={colors.brand} />
-                      <Txt size="sm" weight="semibold" color={colors.brand} style={{ marginLeft: 4 }}>
-                        {TYPE_LABEL[p.type] || p.type}
-                      </Txt>
-                    </View>
-                    <View style={styles.coverBottom}>
-                      <Txt weight="extrabold" size="xl" style={{ color: "#fff" }}>{p.name}</Txt>
-                      {!!p.address && (
-                        <Txt size="sm" color="#D4D4DA" style={{ marginTop: 2 }} numberOfLines={1}>{p.address}</Txt>
-                      )}
-                    </View>
-                  </View>
-                  <View style={styles.cardStats}>
-                    <Stat icon="cog" label="Équipements" value={p.equipment_count ?? 0} />
-                    <View style={styles.statDivider} />
-                    <Stat icon="document-text" label="Documents" value={p.document_count ?? 0} />
-                    <View style={styles.statDivider} />
-                    <Stat icon="notifications" label="Rappels" value={p.reminder_count ?? 0} highlight={(p.reminder_count ?? 0) > 0} />
-                  </View>
-                </Pressable>
-              );
-            })}
-            <Pressable
-              testID="add-property-list-btn"
-              onPress={openCreate}
-              style={styles.addRow}
-              android_ripple={{ color: "rgba(212,175,106,0.08)" }}
-            >
-              <Ionicons name="add-circle-outline" size={22} color={colors.brand} />
-              <Txt weight="bold" color={colors.brand} style={{ marginLeft: spacing.sm }}>Ajouter un bien</Txt>
-            </Pressable>
-          </View>
-        )}
-
-        {loading && items.length === 0 && (
-          <View style={{ paddingTop: spacing["3xl"] }}>
-            <EmptyState icon="home" title="Chargement…" subtitle="Récupération de vos biens" />
-          </View>
-        )}
-      </ScrollView>
+        </ScrollView>
+      )}
     </View>
   );
 }
-
-function Stat({ icon, label, value, highlight }: { icon: keyof typeof Ionicons.glyphMap; label: string; value: number; highlight?: boolean }) {
-  return (
-    <View style={{ flex: 1, alignItems: "center" }}>
-      <View style={{ flexDirection: "row", alignItems: "center" }}>
-        <Ionicons name={icon} size={14} color={highlight ? colors.brand : colors.muted} />
-        <Txt weight="extrabold" size="lg" style={{ marginLeft: 4 }} color={highlight ? colors.brand : colors.onSurface}>{value}</Txt>
-      </View>
-      <Txt size="sm" color={colors.muted} style={{ marginTop: 2 }}>{label}</Txt>
-    </View>
-  );
-}
-
-const styles = StyleSheet.create({
-  header: { flexDirection: "row", alignItems: "center", paddingHorizontal: spacing.lg, paddingBottom: spacing.lg },
-  addBtn: {
-    width: 44, height: 44, borderRadius: 22,
-    backgroundColor: colors.surfaceSecondary,
-    borderWidth: 1, borderColor: colors.border,
-    alignItems: "center", justifyContent: "center",
-  },
-  heroEmpty: {
-    marginHorizontal: spacing.lg,
-    borderRadius: radius.lg,
-    paddingVertical: spacing["2xl"],
-    paddingHorizontal: spacing.lg,
-    alignItems: "center",
-    overflow: "hidden",
-    borderWidth: 1,
-    borderColor: colors.border,
-  },
-  heroIconWrap: {
-    width: 72, height: 72, borderRadius: 36,
-    backgroundColor: colors.brand + "1F",
-    alignItems: "center", justifyContent: "center",
-    borderWidth: 1, borderColor: colors.brand + "44",
-  },
-  featureRow: {
-    flexDirection: "row", alignItems: "center",
-    backgroundColor: colors.surfaceSecondary,
-    borderRadius: radius.md, padding: spacing.md,
-    marginBottom: spacing.sm,
-    borderWidth: 1, borderColor: colors.border,
-  },
-  featureIcon: {
-    width: 40, height: 40, borderRadius: 20,
-    backgroundColor: colors.brand + "1A",
-    alignItems: "center", justifyContent: "center",
-    marginRight: spacing.md,
-  },
-  card: {
-    borderRadius: radius.lg,
-    backgroundColor: colors.surfaceSecondary,
-    borderWidth: 1, borderColor: colors.border,
-    overflow: "hidden",
-  },
-  cover: { height: 200, position: "relative", justifyContent: "flex-end" },
-  typeChip: {
-    position: "absolute", top: spacing.md, left: spacing.md,
-    flexDirection: "row", alignItems: "center",
-    backgroundColor: "rgba(11,11,15,0.65)",
-    paddingHorizontal: 10, paddingVertical: 6,
-    borderRadius: radius.pill,
-    borderWidth: 1, borderColor: colors.brand + "44",
-  },
-  coverBottom: { padding: spacing.lg },
-  cardStats: {
-    flexDirection: "row",
-    paddingVertical: spacing.md,
-    paddingHorizontal: spacing.md,
-    backgroundColor: colors.surface,
-  },
-  statDivider: { width: 1, backgroundColor: colors.border, marginVertical: 4 },
-  addRow: {
-    flexDirection: "row", alignItems: "center", justifyContent: "center",
-    paddingVertical: spacing.lg,
-    borderWidth: 1, borderColor: colors.brand + "55",
-    borderStyle: "dashed",
-    borderRadius: radius.lg,
-    backgroundColor: colors.brand + "0A",
-  },
-});
