@@ -98,13 +98,13 @@ export default function DepositPaymentSheet({ interventionId, onSuccess, onCance
     try {
       const { initPaymentSheet, presentPaymentSheet } = stripeSdk;
       const initRes = await initPaymentSheet({
-        merchantDisplayName: "Auxora",
+        merchantDisplayName: "Faqtotum",
         paymentIntentClientSecret: clientSecretRef.current!,
         applePay: chosenMethod === "apple_pay" ? { merchantCountryCode: "FR" } : undefined,
         style: "alwaysDark",
         appearance: { colors: { primary: COLORS.accent, background: COLORS.bg, componentBackground: COLORS.bgSoft } },
         allowsDelayedPaymentMethods: false,
-        returnURL: "auxora://stripe-redirect",
+        returnURL: "faqtotum://stripe-redirect",
         defaultBillingDetails: { name: "" },
       });
       if (initRes?.error) throw new Error(initRes.error.message);

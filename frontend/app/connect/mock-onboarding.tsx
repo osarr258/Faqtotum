@@ -37,7 +37,7 @@ export default function MockOnboarding() {
         <Animated.View entering={FadeInUp.duration(400)} style={styles.card}>
           <Txt weight="extrabold" style={styles.title}>Configurez votre compte</Txt>
           <Txt style={styles.body}>
-            Auxora utilise Stripe pour vous verser vos paiements en toute sécurité.
+            Faqtotum utilise Stripe pour vous verser vos paiements en toute sécurité.
             En quelques étapes, vous serez prêt à recevoir vos gains.
           </Txt>
           <View style={styles.checks}>
@@ -85,7 +85,7 @@ export default function MockOnboarding() {
             onPress={() => router.replace("/connect")}
             style={({ pressed }) => [styles.primary, pressed && { opacity: 0.85 }]}
           >
-            <Txt weight="bold" style={{ color: "#FFF" }}>Retourner sur Auxora</Txt>
+            <Txt weight="bold" style={{ color: "#FFF" }}>Retourner sur Faqtotum</Txt>
           </Pressable>
         </Animated.View>
       )}

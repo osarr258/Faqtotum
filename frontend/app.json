@@ -1,18 +1,18 @@
 {
   "expo": {
-    "name": "frontend",
+    "name": "Faqtotum",
     "slug": "frontend",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
-    "scheme": "frontend",
+    "scheme": "faqtotum",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
     "ios": {
       "supportsTablet": true,
       "infoPlist": {
         "NSLocationWhenInUseUsageDescription": "Trouver les artisans proches de vous",
-        "NSFaceIDUsageDescription": "Déverrouillez Auxora avec Face ID"
+        "NSFaceIDUsageDescription": "Déverrouillez Faqtotum avec Face ID"
       },
       "bundleIdentifier": "com.emergent.reviensapp.uwn3nc"
     },
@@ -50,7 +50,7 @@
       [
         "@stripe/stripe-react-native",
         {
-          "merchantIdentifier": "merchant.com.auxora.app",
+          "merchantIdentifier": "merchant.com.faqtotum.app",
           "enableGooglePay": false
         }
       ]

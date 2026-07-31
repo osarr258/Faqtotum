@@ -372,7 +372,7 @@ function PassportShareModal({
     if (!url) return;
     try {
       await Share.share({
-        message: `Passeport du logement "${property.name}" · Auxora\n${url}`,
+        message: `Passeport du logement "${property.name}" · Faqtotum\n${url}`,
         url,
       });
     } catch {}

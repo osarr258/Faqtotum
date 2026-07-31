@@ -1,6 +1,7 @@
 /**
- * Auxora — Welcome Cinematic (V2)
+ * Faqtotum — Welcome Cinematic (V2)
  * Three-scene infinite loop, no login until end.
+ * Minimalist black/white/grey palette — Apple × Stripe aesthetic.
  */
 import React, { useEffect, useRef, useState } from "react";
 import {
@@ -19,8 +20,8 @@ const { width: W, height: H } = Dimensions.get("window");
 const SCENES = [
   {
     uri: "https://images.unsplash.com/photo-1758915753369-6a33c7bc1d76?crop=entropy&cs=srgb&fm=jpg&q=85&w=1200",
-    kicker: "AUXORA",
-    title: "Your home deserves better.",
+    kicker: "FAQTOTUM",
+    title: "Votre maison mérite mieux.",
     sub: "Un foyer entretenu, protégé, valorisé.",
   },
   {
@@ -85,7 +86,7 @@ export default function Welcome() {
 
       {/* Word mark */}
       <View style={{ position: "absolute", top: insets.top + space.xl, left: 0, right: 0, alignItems: "center" }}>
-        <Text variant="caption" style={{ color: palette.gold, letterSpacing: 4 }}>AUXORA</Text>
+        <Text variant="caption" style={{ color: palette.paper, letterSpacing: 6 }}>FAQTOTUM</Text>
       </View>
 
       {/* Progress rail */}
@@ -114,7 +115,7 @@ export default function Welcome() {
           transform: [{ translateY: textY }],
         }}
       >
-        <Text variant="caption" style={{ color: palette.goldSoft, marginBottom: space.md }}>{s.kicker}</Text>
+        <Text variant="caption" style={{ color: "rgba(255,255,255,0.70)", letterSpacing: 3, marginBottom: space.md }}>{s.kicker}</Text>
         <Text variant="hero" style={{ color: palette.paper }}>{s.title}</Text>
         <Text variant="body" style={{ color: "rgba(248,248,245,0.75)", marginTop: space.md }}>{s.sub}</Text>
       </Animated.View>

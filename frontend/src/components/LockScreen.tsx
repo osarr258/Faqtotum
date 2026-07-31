@@ -22,13 +22,13 @@ import { getBiometricSupport, BiometricSupport } from "@/src/utils/biometric";
 import { clearToken } from "@/src/api";
 
 const COLORS = {
-  bg: "#0B0B0B",
-  bgSoft: "#141416",
+  bg: "#000000",
+  bgSoft: "#1C1C1E",
   white: "#FFFFFF",
-  accent: "#C8A96B",
-  secondary: "#B8B8B8",
-  muted: "#6E6E73",
-  border: "#1F1F22",
+  accent: "#FFFFFF",
+  secondary: "#D2D2D7",
+  muted: "#86868B",
+  border: "#2C2C2E",
 };
 
 export default function LockScreen({ onFallbackLogin }: { onFallbackLogin: () => void }) {
@@ -81,14 +81,14 @@ export default function LockScreen({ onFallbackLogin }: { onFallbackLogin: () =>
   return (
     <View style={[styles.container, { paddingTop: insets.top + 24, paddingBottom: insets.bottom + 24 }]}>
       <LinearGradient
-        colors={["rgba(200,169,107,0.10)", "transparent"]}
+        colors={["rgba(255,255,255,0.06)", "transparent"]}
         style={StyleSheet.absoluteFillObject}
         pointerEvents="none"
       />
 
       <View style={styles.brandRow}>
         <View style={styles.brandDot} />
-        <Txt weight="extrabold" size="sm" style={styles.brandText}>AUXORA</Txt>
+        <Txt weight="extrabold" size="sm" style={styles.brandText}>FAQTOTUM</Txt>
       </View>
 
       <Animated.View entering={FadeIn.duration(600)} style={styles.center}>
@@ -155,13 +155,13 @@ const styles = StyleSheet.create({
   iconGlow: {
     position: "absolute",
     width: 128, height: 128, borderRadius: 64,
-    backgroundColor: "rgba(200,169,107,0.16)",
-    shadowColor: COLORS.accent, shadowOpacity: 0.9, shadowRadius: 40, shadowOffset: { width: 0, height: 0 },
+    backgroundColor: "rgba(255,255,255,0.10)",
+    shadowColor: COLORS.accent, shadowOpacity: 0.6, shadowRadius: 40, shadowOffset: { width: 0, height: 0 },
   },
   iconInner: {
     width: 92, height: 92, borderRadius: 46,
     backgroundColor: COLORS.bgSoft,
-    borderWidth: 1, borderColor: "rgba(200,169,107,0.4)",
+    borderWidth: 1, borderColor: "rgba(255,255,255,0.22)",
     alignItems: "center", justifyContent: "center",
   },
   title: { color: COLORS.white, fontSize: 30, letterSpacing: -0.5 },

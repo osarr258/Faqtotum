@@ -113,7 +113,7 @@ export default function BiometricScreen() {
           <View style={styles.hintBox}>
             <Ionicons name="information-circle-outline" size={16} color={colors.brand} />
             <Txt size="sm" color={colors.muted} style={{ flex: 1, marginLeft: spacing.sm, lineHeight: 18 }}>
-              Vos données biométriques restent sur l&apos;appareil. Auxora ne les reçoit jamais.
+              Vos données biométriques restent sur l&apos;appareil. Faqtotum ne les reçoit jamais.
               Lors d&apos;une déconnexion, {label} est automatiquement désactivé.
             </Txt>
           </View>

@@ -1,5 +1,5 @@
 /**
- * Auxora V2 — Bottom Navigation
+ * Faqtotum V2 — Bottom Navigation
  * 4 icons: AI, Maison, Carte, Profil. No labels by default (only on active).
  */
 import React from "react";

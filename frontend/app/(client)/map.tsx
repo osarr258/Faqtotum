@@ -1,5 +1,5 @@
 /**
- * Auxora V2 — Map placeholder (full-screen redesign coming in Phase D).
+ * Faqtotum V2 — Map placeholder (full-screen redesign coming in Phase D).
  */
 import React from "react";
 import { View, Pressable } from "react-native";
@@ -18,7 +18,7 @@ export default function MapPlaceholder() {
     <View style={{ flex: 1, backgroundColor: t.bg }}>
       <StatusBar style={t.scheme === "dark" ? "light" : "dark"} />
       <View style={{ flex: 1, paddingTop: insets.top + space.xxl, paddingHorizontal: space.xl }}>
-        <Text variant="caption" tone="fgSubtle" style={{ color: palette.gold, letterSpacing: 3 }}>AUXORA</Text>
+        <Text variant="caption" tone="fgMuted" style={{ letterSpacing: 4 }}>FAQTOTUM</Text>
         <Text variant="display" style={{ marginTop: space.md, letterSpacing: -2 }}>Carte</Text>
         <Text variant="body" tone="fgMuted" style={{ marginTop: space.md, maxWidth: 320 }}>
           Bientôt disponible — un plan Uber pour trouver un artisan proche de vous en quelques secondes.
@@ -31,7 +31,7 @@ export default function MapPlaceholder() {
           }}
         >
           <Ionicons name="sparkles-outline" size={18} color={t.bg} />
-          <Text variant="h3" style={{ color: t.bg }}>Demander à Auxora</Text>
+          <Text variant="h3" style={{ color: t.bg }}>Demander à Faqtotum</Text>
         </Pressable>
       </View>
     </View>

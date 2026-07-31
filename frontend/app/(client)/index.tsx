@@ -1,5 +1,5 @@
 /**
- * Auxora V2 — AI Home (default tab).
+ * Faqtotum V2 — AI Home (default tab).
  * ChatGPT-style: 80% of the screen is a conversation, floating input,
  * intelligent suggestions, AI-as-navigation (intent → route).
  */
@@ -74,7 +74,7 @@ export default function AiHome() {
       {/* Header */}
       <View style={{ paddingTop: insets.top + space.md, paddingHorizontal: space.xl, paddingBottom: space.sm, flexDirection: "row", alignItems: "center", justifyContent: "space-between" }}>
         <View>
-          <Text variant="caption" tone="fgSubtle" style={{ color: palette.gold, letterSpacing: 3 }}>AUXORA</Text>
+          <Text variant="caption" tone="fgMuted" style={{ letterSpacing: 4 }}>FAQTOTUM</Text>
           <Text variant="h2" style={{ marginTop: 2 }}>Bonjour</Text>
         </View>
         <Pressable onPress={() => { hap.tap(); router.push("/(client)/profile"); }} hitSlop={8}>
@@ -96,7 +96,7 @@ export default function AiHome() {
             <Text variant="display" style={{ letterSpacing: -2 }}>Que puis‑je faire</Text>
             <Text variant="display" tone="fgMuted" style={{ letterSpacing: -2 }}>pour votre maison ?</Text>
             <Text variant="body" tone="fgMuted" style={{ marginTop: space.lg, maxWidth: 320 }}>
-              Décrivez un souci, parlez, ou envoyez une photo. Auxora comprend et agit.
+              Décrivez un souci, parlez, ou envoyez une photo. Faqtotum comprend et agit.
             </Text>
           </View>
         ) : (
@@ -158,7 +158,7 @@ export default function AiHome() {
             <Ionicons name="add" size={22} color={t.fg} />
           </Pressable>
           <TextInput
-            placeholder="Demandez à Auxora…"
+            placeholder="Demandez à Faqtotum…"
             placeholderTextColor={t.fgSubtle}
             value={q}
             onChangeText={setQ}

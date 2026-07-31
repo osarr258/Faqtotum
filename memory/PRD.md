@@ -1,4 +1,14 @@
-# ProConnect / Auxora — PRD
+# ProConnect / Faqtotum — PRD
+
+## 🎨 Sprint Rebranding V3 — Faqtotum Identity (Juin 2026)
+- Rebranding complet de « Auxora » vers « Faqtotum » sur l'ensemble du frontend.
+- Nouvelle palette : **Noir pur #000 / Blanc pur #FFF / Gris clair #F5F5F7 / Gris Apple #86868B**.
+- Suppression totale du Champagne Gold (`palette.gold` mappé en alias gris pour compat).
+- Typographie : Plus Jakarta Sans, tracking resserré à l'Apple (–1.8 sur display, +1.2 sur caption).
+- Fichiers clés modifiés : `src/design/tokens.ts`, `src/theme/index.ts`, `welcome.tsx`, `(client)/*`, `LockScreen.tsx`, `app.json` (name=Faqtotum, scheme=faqtotum, merchant.com.faqtotum.app).
+- Aucune logique métier touchée. Backend intact (485 tests OK).
+
+
 
 ## Problem Statement (original, FR)
 Application de mise en relation à la Uber/Airbnb connectant les clients (particuliers/pros) aux artisans des métiers manuels (plombier, chauffagiste, climaticien, peintre, serrurier, etc.). Les clients sélectionnent et réservent un artisan ; les sociétés/artisans paient l'accès pour être référencés. Interface fluide et intuitive façon Revolut.
@@ -191,11 +201,11 @@ Application de mise en relation à la Uber/Airbnb connectant les clients (partic
 ## Sprint 9 — Cinematic Welcome Screen (LIVRÉ)
 - Nouvel écran `/welcome` = première expérience utilisateur (avant `/onboarding`).
 - Design "Revolut of home services" : matte black + champagne gold + off-white.
-- 3 hero images cinématiques originales générées via Gemini Nano Banana (`assets/images/auxora_hero_[1-3].png`).
+- 3 hero images cinématiques originales générées via Gemini Nano Banana (`assets/images/faqtotum_hero_[1-3].png`).
 - Animation full-screen : Ken Burns pan/zoom + cross-fade loop 21s seamless.
 - Overlay particules dorées (22), gradient vignette 4-stops.
-- Séquence texte : atmosphère (0-2s) → logo AUXORA (2s) → titre (4s) → sous-titre (6s) → boutons (8s, fixes).
-- 3 CTA : "Créer un compte" (gold), "Se connecter" (glass), "Découvrir Auxora →" (subtile lien vers /onboarding).
+- Séquence texte : atmosphère (0-2s) → logo FAQTOTUM (2s) → titre (4s) → sous-titre (6s) → boutons (8s, fixes).
+- 3 CTA : "Créer un compte" (gold), "Se connecter" (glass), "Découvrir Faqtotum →" (subtile lien vers /onboarding).
 - Logout/RGPD delete redirigent vers `/welcome`.
 
 ## Sprint 10 — Helpo AI-First Home (LIVRÉ)
@@ -214,7 +224,7 @@ Application de mise en relation à la Uber/Airbnb connectant les clients (partic
   - Meta chips : durée / prix / confiance IA
   - CTA "Voir les professionnels" (or)
 - Cards artisans (Airbnb-style) : photo circulaire + badge verified + rating + trade + city + arrival + hourly rate + Dispo pill
-- Section trust "POURQUOI AUXORA ?" (3 cards) affichée avant conversation
+- Section trust "POURQUOI FAQTOTUM ?" (3 cards) affichée avant conversation
 - Backend : réutilise `/api/ai/diagnose` (GPT-4o via Emergent LLM Key)
 - Tab bar : "Accueil" → "Helpo"
 
@@ -250,7 +260,7 @@ Application de mise en relation à la Uber/Airbnb connectant les clients (partic
 - `GET /api/calendar/oauth/status` — stub OAuth Google/Outlook (prochain sprint)
 
 ### Frontend
-- **Auxora diagnostic** : après identification du métier → 2 CTAs stylisés (or / glass)
+- **Faqtotum diagnostic** : après identification du métier → 2 CTAs stylisés (or / glass)
 - **`/live-map`** : carte Uber-style avec :
   - Positions GPS live (fallback simulation déterministe si pas de position live)
   - Radius chips 2 / 5 / 10 / 25 / 50 km
@@ -289,7 +299,7 @@ Architecture prête (endpoint `/calendar/oauth/status`, teaser UI). Vraie intég
 
 ### Frontend
 - Package `@stripe/stripe-react-native@0.50.3` installé
-- Config plugin app.json : `merchantIdentifier: merchant.com.auxora.app`
+- Config plugin app.json : `merchantIdentifier: merchant.com.faqtotum.app`
 - Env : `EXPO_PUBLIC_STRIPE_PUBLISHABLE_KEY=pk_test_emergent`
 - **StripeWrapper** avec fallback web (StripeWrapper.web.tsx no-op)
 - **DepositPaymentSheet** — modal bottom sheet premium :
@@ -318,16 +328,16 @@ Architecture prête (endpoint `/calendar/oauth/status`, teaser UI). Vraie intég
 - `POST /interventions/{id}/finish` — artisan finit avec montant total → balance calculée (total - acompte)
 - `POST /interventions/{id}/final/create` — client PaymentIntent pour le solde
 - `POST /interventions/{id}/final/confirm` — client valide paiement solde → awaiting_validation
-- `POST /interventions/{id}/validate` — client valide travail → **Stripe Connect Transfer automatique** vers artisan (avec commission Auxora)
+- `POST /interventions/{id}/validate` — client valide travail → **Stripe Connect Transfer automatique** vers artisan (avec commission Faqtotum)
 - `GET /interventions/{id}/payment-summary` — récap paiement (acompte, solde, total, commission, net)
 - `GET /artisans/me/earnings` — dashboard revenus (total_gross, total_net, total_commission, transfers[])
 
 ### Flow complet client→artisan avec commission
-1. **Acompte** (10% du prix, 15-30€) via Apple Pay/Carte — Stripe PaymentIntent → Auxora
+1. **Acompte** (10% du prix, 15-30€) via Apple Pay/Carte — Stripe PaymentIntent → Faqtotum
 2. **Démarrage** artisan (start)
 3. **Finish** artisan → renseigne montant total
-4. **Solde** (total - acompte) via Apple Pay/Carte — 2ème PaymentIntent → Auxora
-5. **Validation** client → Auxora calcule commission (par défaut 10%) + **Stripe Transfer** vers compte connecté artisan du montant net
+4. **Solde** (total - acompte) via Apple Pay/Carte — 2ème PaymentIntent → Faqtotum
+5. **Validation** client → Faqtotum calcule commission (par défaut 10%) + **Stripe Transfer** vers compte connecté artisan du montant net
 6. Artisan voit ses gains dans `/artisans/me/earnings`
 
 ### Frontend
@@ -361,7 +371,7 @@ Architecture prête (endpoint `/calendar/oauth/status`, teaser UI). Vraie intég
 - **`personal.tsx`** — édition Nom / Téléphone / Adresse / Ville / Code postal, email en lecture seule, save + audit log
 - **`payment-methods.tsx`** — liste des cartes, définir par défaut, supprimer, ajouter Apple Pay / carte (mode démo)
 - **`notifications.tsx`** — 6 toggles : Push, Email, SMS, Suivi interventions, Nouvelles réservations, Marketing
-- **`support.tsx`** — Chat Auxora IA, Email, WhatsApp, Centre d'aide, CGU, Politique confidentialité
+- **`support.tsx`** — Chat Faqtotum IA, Email, WhatsApp, Centre d'aide, CGU, Politique confidentialité
 
 ### Client Profile — tous les rows cliquables
 - Informations personnelles → `/profile/personal`

@@ -10,16 +10,16 @@ export default function Support() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
 
-  const openMail = () => Linking.openURL("mailto:support@auxora.fr?subject=Support%20Auxora").catch(() => Alert.alert("Email", "support@auxora.fr"));
+  const openMail = () => Linking.openURL("mailto:support@faqtotum.fr?subject=Support%20Faqtotum").catch(() => Alert.alert("Email", "support@faqtotum.fr"));
   const openWhatsapp = () => Linking.openURL("https://wa.me/33600000000").catch(() => Alert.alert("WhatsApp", "+33 6 00 00 00 00"));
 
   const items = [
-    { icon: "chatbubbles", label: "Discuter avec Auxora IA", sub: "Réponse instantanée 24/7", onPress: () => router.replace("/") },
-    { icon: "mail", label: "Contacter par email", sub: "support@auxora.fr", onPress: openMail },
+    { icon: "chatbubbles", label: "Discuter avec Faqtotum IA", sub: "Réponse instantanée 24/7", onPress: () => router.replace("/") },
+    { icon: "mail", label: "Contacter par email", sub: "support@faqtotum.fr", onPress: openMail },
     { icon: "logo-whatsapp", label: "WhatsApp", sub: "Réponse sous 1h en journée", onPress: openWhatsapp },
     { icon: "help-buoy", label: "Centre d'aide", sub: "FAQ et guides", onPress: () => Alert.alert("Centre d'aide", "Disponible très bientôt.") },
-    { icon: "document-text", label: "Conditions d'utilisation", sub: "Version 1.0", onPress: () => Linking.openURL("https://auxora.fr/cgu").catch(() => {}) },
-    { icon: "lock-closed", label: "Politique de confidentialité", sub: "RGPD", onPress: () => Linking.openURL("https://auxora.fr/privacy").catch(() => {}) },
+    { icon: "document-text", label: "Conditions d'utilisation", sub: "Version 1.0", onPress: () => Linking.openURL("https://faqtotum.fr/cgu").catch(() => {}) },
+    { icon: "lock-closed", label: "Politique de confidentialité", sub: "RGPD", onPress: () => Linking.openURL("https://faqtotum.fr/privacy").catch(() => {}) },
   ] as const;
 
   return (
@@ -48,7 +48,7 @@ export default function Support() {
       </View>
 
       <View style={styles.versionBox}>
-        <Txt size="sm" color={colors.muted}>Auxora — version 1.0.0</Txt>
+        <Txt size="sm" color={colors.muted}>Faqtotum — version 1.0.0</Txt>
       </View>
     </ScrollView>
   );

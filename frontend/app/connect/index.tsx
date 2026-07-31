@@ -182,14 +182,14 @@ export default function ConnectScreen() {
       <Animated.View entering={FadeInUp.delay(250).duration(400)} style={styles.info}>
         <Txt weight="bold" size="base" style={{ color: COLORS.white, marginBottom: 10 }}>Comment ça marche ?</Txt>
         <InfoStep n="1" title="Le client paie" sub="Acompte + solde via Apple Pay ou carte" />
-        <InfoStep n="2" title="Auxora garde en séquestre" sub="Fonds sécurisés jusqu'à validation de la mission" />
-        <InfoStep n="3" title="Vous recevez le paiement" sub="Après validation, transfert automatique sur votre banque (commission Auxora déduite)" />
+        <InfoStep n="2" title="Faqtotum garde en séquestre" sub="Fonds sécurisés jusqu'à validation de la mission" />
+        <InfoStep n="3" title="Vous recevez le paiement" sub="Après validation, transfert automatique sur votre banque (commission Faqtotum déduite)" />
       </Animated.View>
 
       <Animated.View entering={FadeInUp.delay(350).duration(400)} style={styles.legal}>
         <Ionicons name="shield-checkmark" size={14} color={COLORS.muted} />
         <Txt size="sm" style={{ color: COLORS.muted, marginLeft: 6, flex: 1, lineHeight: 18 }}>
-          Auxora utilise Stripe pour traiter les paiements en toute conformité (PCI-DSS, PSD2, KYC). Vos données bancaires ne sont jamais stockées par Auxora.
+          Faqtotum utilise Stripe pour traiter les paiements en toute conformité (PCI-DSS, PSD2, KYC). Vos données bancaires ne sont jamais stockées par Faqtotum.
         </Txt>
       </Animated.View>
     </ScrollView>

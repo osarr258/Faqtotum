@@ -10,7 +10,7 @@ export default function StripeWrapper({ children }: { children: React.ReactNode 
   return (
     <StripeProvider
       publishableKey={STRIPE_PK}
-      merchantIdentifier="merchant.com.auxora.app"
+      merchantIdentifier="merchant.com.faqtotum.app"
     >
       {children}
     </StripeProvider>

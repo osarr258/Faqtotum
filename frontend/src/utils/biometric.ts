@@ -71,7 +71,7 @@ export async function authenticateWithBiometric(promptMessage?: string): Promise
   if (Platform.OS === "web") return false;
   try {
     const res = await LocalAuthentication.authenticateAsync({
-      promptMessage: promptMessage || "Déverrouillez Auxora",
+      promptMessage: promptMessage || "Déverrouillez Faqtotum",
       cancelLabel: "Annuler",
       fallbackLabel: "Utiliser le mot de passe",
       disableDeviceFallback: false,

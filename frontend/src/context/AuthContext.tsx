@@ -95,7 +95,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         setLocked(true);
         setLoading(false);
         // Try to unlock immediately
-        const ok = await authenticateWithBiometric("Déverrouillez Auxora");
+        const ok = await authenticateWithBiometric("Déverrouillez Faqtotum");
         if (ok) {
           setLocked(false);
           await loadMe();
@@ -111,7 +111,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, [loadMe]);
 
   const unlockWithBiometric = useCallback(async () => {
-    const ok = await authenticateWithBiometric("Déverrouillez Auxora");
+    const ok = await authenticateWithBiometric("Déverrouillez Faqtotum");
     if (ok) {
       setLocked(false);
       await loadMe();

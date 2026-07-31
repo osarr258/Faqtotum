@@ -1,6 +1,6 @@
 /**
- * Auxora Design System — Primitive components.
- * Use ONLY these across the redesigned app.
+ * Faqtotum Design System — Primitive components.
+ * Minimalist Apple × Stripe aesthetic. Use ONLY these primitives.
  */
 import React, { useRef } from "react";
 import {
@@ -37,7 +37,7 @@ export function Text({
       allowFontScaling
       style={[
         {
-          // Auxora typeface: Plus Jakarta Sans (Inter-adjacent geometric sans
+          // Faqtotum typeface: Plus Jakarta Sans (Inter-adjacent geometric sans
           // already loaded at boot). We map weight → variant filename.
           fontFamily:
             v.weight === "700" ? "Jakarta700" :

@@ -1,5 +1,5 @@
 /**
- * Auxora V2 — Home Profile (Apple Health inspired).
+ * Faqtotum V2 — Home Profile (Apple Health inspired).
  * Hero picture, health score dial, large cards.
  */
 import React, { useState, useCallback } from "react";
@@ -115,10 +115,10 @@ export default function HomeProfile() {
 
       {!prop ? (
         <ScrollView contentContainerStyle={{ padding: space.xl, paddingTop: insets.top + space.huge }}>
-          <Text variant="caption" tone="fgSubtle" style={{ color: palette.gold, letterSpacing: 3 }}>AUXORA</Text>
+          <Text variant="caption" tone="fgMuted" style={{ letterSpacing: 4 }}>FAQTOTUM</Text>
           <Text variant="display" style={{ marginTop: space.md, letterSpacing: -2 }}>Ma maison</Text>
           <Text variant="body" tone="fgMuted" style={{ marginTop: space.md, maxWidth: 320 }}>
-            {"Ajoutez votre bien pour que Auxora s'en occupe."}
+            {"Ajoutez votre bien pour que Faqtotum s'en occupe."}
           </Text>
           <Pressable
             onPress={() => { hap.firm(); router.push("/property/create"); }}
@@ -146,7 +146,7 @@ export default function HomeProfile() {
               style={StyleSheet.absoluteFillObject as any}
             />
             <View style={{ position: "absolute", top: insets.top + space.md, left: space.xl, right: space.xl, flexDirection: "row", alignItems: "center", justifyContent: "space-between" }}>
-              <Text variant="caption" style={{ color: palette.goldSoft, letterSpacing: 3 }}>MA MAISON</Text>
+              <Text variant="caption" style={{ color: "rgba(255,255,255,0.75)", letterSpacing: 4 }}>MA MAISON</Text>
               <Pressable onPress={() => { hap.tap(); router.push({ pathname: "/property/create", params: { id: prop.property_id } }); }} hitSlop={8}
                 style={{ width: 36, height: 36, borderRadius: 999, backgroundColor: "rgba(255,255,255,0.16)", alignItems: "center", justifyContent: "center", borderWidth: 1, borderColor: "rgba(255,255,255,0.24)" }}>
                 <Ionicons name="create-outline" size={18} color={palette.paper} />
