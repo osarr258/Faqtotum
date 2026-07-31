@@ -21,7 +21,7 @@ const SCENES = [
     uri: "https://images.unsplash.com/photo-1758915753369-6a33c7bc1d76?crop=entropy&cs=srgb&fm=jpg&q=85&w=1200",
     kicker: "AUXORA",
     title: "Your home deserves better.",
-    sub: "Un foyer entretenu, protgé, valorisé.",
+    sub: "Un foyer entretenu, protégé, valorisé.",
   },
   {
     uri: "https://images.unsplash.com/photo-1511711890176-b3a26e4fb6d1?crop=entropy&cs=srgb&fm=jpg&q=85&w=1200",

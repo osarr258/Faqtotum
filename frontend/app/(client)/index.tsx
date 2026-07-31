@@ -3,16 +3,15 @@
  * ChatGPT-style: 80% of the screen is a conversation, floating input,
  * intelligent suggestions, AI-as-navigation (intent → route).
  */
-import React, { useMemo, useRef, useState } from "react";
+import React, { useRef, useState } from "react";
 import {
-  View, ScrollView, Pressable, StyleSheet, KeyboardAvoidingView, Platform,
-  TextInput, Animated, Easing,
+  View, ScrollView, Pressable, KeyboardAvoidingView, Platform, TextInput,
 } from "react-native";
 import { useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { StatusBar } from "expo-status-bar";
-import { Text, Chip, useTheme, space, radius, motion, palette } from "@/src/design";
+import { Text, Chip, useTheme, space, radius, palette } from "@/src/design";
 import { hap } from "@/src/design/haptics";
 
 type Msg = { id: string; from: "user" | "ai"; text: string };

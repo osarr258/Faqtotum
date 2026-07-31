@@ -2,7 +2,7 @@
  * Auxora V2 — Home Profile (Apple Health inspired).
  * Hero picture, health score dial, large cards.
  */
-import React, { useEffect, useState, useCallback } from "react";
+import React, { useState, useCallback } from "react";
 import { View, ScrollView, StyleSheet, Pressable, Dimensions } from "react-native";
 import { Image } from "expo-image";
 import { LinearGradient } from "expo-linear-gradient";
@@ -11,11 +11,10 @@ import { Ionicons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { StatusBar } from "expo-status-bar";
 import Svg, { Circle } from "react-native-svg";
-import { Text, Card, Row, Stack, useTheme, space, radius, palette } from "@/src/design";
+import { Text, Card, Row, useTheme, space, radius, palette } from "@/src/design";
 import { hap } from "@/src/design/haptics";
 import { api } from "@/src/api";
 
-const { width: W } = Dimensions.get("window");
 const HERO_H = 380;
 
 type Property = {
@@ -109,7 +108,6 @@ export default function HomeProfile() {
 
   const heroImage = prop?.photos?.[0];
   const health = prop?.health_score ?? 94;
-  const dpe = prop?.dpe_grade;
 
   return (
     <View style={{ flex: 1, backgroundColor: t.bg }}>
@@ -120,7 +118,7 @@ export default function HomeProfile() {
           <Text variant="caption" tone="fgSubtle" style={{ color: palette.gold, letterSpacing: 3 }}>AUXORA</Text>
           <Text variant="display" style={{ marginTop: space.md, letterSpacing: -2 }}>Ma maison</Text>
           <Text variant="body" tone="fgMuted" style={{ marginTop: space.md, maxWidth: 320 }}>
-            Ajoutez votre bien pour que Auxora s'en occupe.
+            {"Ajoutez votre bien pour que Auxora s'en occupe."}
           </Text>
           <Pressable
             onPress={() => { hap.firm(); router.push("/property/create"); }}

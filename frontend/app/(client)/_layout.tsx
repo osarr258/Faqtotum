@@ -4,7 +4,7 @@
  */
 import React from "react";
 import { Tabs } from "expo-router";
-import { View, Platform } from "react-native";
+import { View } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useTheme, palette, space } from "@/src/design";
 import { hap } from "@/src/design/haptics";

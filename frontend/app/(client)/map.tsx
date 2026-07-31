@@ -2,7 +2,7 @@
  * Auxora V2 — Map placeholder (full-screen redesign coming in Phase D).
  */
 import React from "react";
-import { View, Pressable, StyleSheet } from "react-native";
+import { View, Pressable } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
