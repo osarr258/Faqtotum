@@ -41,6 +41,34 @@ db = client[os.environ['DB_NAME']]
 app = FastAPI()
 api_router = APIRouter(prefix="/api")
 
+
+def _parse_allowed_origins() -> list[str]:
+    """
+    CORS allow-list — read from env `ALLOWED_ORIGINS` (comma-separated).
+
+    Rules:
+    - In development / preview: sensible defaults (localhost + Expo preview host).
+    - In production: MUST be explicitly set via env var. If unset and the
+      process runs with `APP_ENV=production`, we fail-closed (empty list),
+      which blocks cross-origin requests until the operator configures it.
+    - `ALLOWED_ORIGIN_REGEX` env var can additionally allow a regex pattern
+      (useful for the ephemeral emergent preview subdomains).
+    """
+    raw = os.environ.get("ALLOWED_ORIGINS", "").strip()
+    app_env = os.environ.get("APP_ENV", "development").lower()
+    if raw:
+        return [o.strip() for o in raw.split(",") if o.strip()]
+    if app_env == "production":
+        # Fail-closed in prod: no wildcard, no defaults.
+        return []
+    # Dev / preview defaults.
+    return [
+        "http://localhost:3000",
+        "http://localhost:19006",
+        "http://127.0.0.1:3000",
+        "http://127.0.0.1:19006",
+    ]
+
 # --- Sprint 14 Phase 1 — Shared auth dependencies (Strangler Pattern) ---------
 # Single source of truth for `get_current_user` / `require_roles`.
 # Legacy definitions below (search: `LEGACY (P1 migrated)`) are kept temporarily
@@ -3614,7 +3642,8 @@ app.include_router(_modular_interventions, prefix="/api")
 app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,
-    allow_origins=["*"],
+    allow_origins=_parse_allowed_origins(),
+    allow_origin_regex=os.environ.get("ALLOWED_ORIGIN_REGEX") or None,
     allow_methods=["*"],
     allow_headers=["*"],
 )

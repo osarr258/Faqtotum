@@ -13,6 +13,7 @@ Handles:
 from __future__ import annotations
 import hashlib
 import json
+import os
 import secrets
 import uuid
 from datetime import datetime, timezone, timedelta
@@ -472,14 +473,29 @@ async def mfa_prepare(db, user_id: str, method: str = "totp") -> Dict[str, Any]:
 
 
 async def mfa_verify_stub(db, user_id: str, code: str) -> Dict[str, Any]:
-    """Stub verification — accepts '000000' as demo confirmation."""
-    if code == "000000":
+    """
+    Verify an MFA enrollment code.
+
+    Security: the historical "000000" demo bypass is now GATED behind an
+    explicit environment variable so it can never leak to production.
+
+    Rules:
+    - `MFA_DEMO_MODE=true` AND `APP_ENV != "production"` → "000000" is accepted.
+    - In any other configuration (default / prod) → "000000" is rejected.
+    - Real TOTP (pyotp) implementation is planned to replace this stub.
+    """
+    demo_enabled = (
+        os.environ.get("MFA_DEMO_MODE", "").strip().lower() == "true"
+        and os.environ.get("APP_ENV", "development").strip().lower() != "production"
+    )
+    if demo_enabled and code == "000000":
         await db.mfa_settings.update_one(
             {"user_id": user_id},
             {"$set": {"enabled": True, "activated_at": now_iso()}},
         )
         return {"ok": True, "enabled": True, "message": "MFA activée (mode démo)"}
-    raise HTTPException(status_code=400, detail="Code invalide (démo: 000000)")
+    # Reject everything else (including "000000" outside demo mode).
+    raise HTTPException(status_code=400, detail="Code MFA invalide")
 
 
 async def mfa_disable(db, user_id: str) -> Dict[str, Any]:

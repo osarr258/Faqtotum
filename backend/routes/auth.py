@@ -85,7 +85,7 @@ def build_auth_router(db, get_current_user):
 
     @r.get("/")
     async def root():
-        return {"message": "Auxora API"}
+        return {"message": "Faqtotum API"}
 
     @r.post("/auth/register")
     async def register(data: RegisterInput, request: Request):
