@@ -65,7 +65,6 @@ def build_bookings_router(
     *,
     enrich_artisan,
     annotate_reviewed,
-    add_points,
     trust_engine,
 ):
     r = APIRouter()
@@ -174,10 +173,9 @@ def build_bookings_router(
         )
 
         if data.status == "completed":
-            try:
-                await add_points(booking["client_id"], "booking_completed")
-            except Exception:
-                pass
+            # Loyalty ledger removed in V1 — booking completion no longer
+            # awards points. Trust score recomputation still happens below.
+            pass
         if booking.get("artisan_id"):
             try:
                 await trust_engine.persist(db, booking["artisan_id"])

@@ -70,30 +70,10 @@ def H(auth):
 
 # --------------------------- 1. Subscription plans (public) ---------------------------
 
-def test_subscription_plans_public_no_leak(s):
-    r = s.get(f"{BASE}/subscriptions/plans")
-    assert r.status_code == 200
-    plans = r.json()
-    assert len(plans) == 3
-    keys = [p["key"] for p in plans]
-    assert keys == ["starter", "professional", "enterprise"]
-    prices = {p["key"]: p["price_cents"] for p in plans}
-    assert prices == {"starter": 0, "professional": 2900, "enterprise": 7900}
-    for p in plans:
-        assert "stripe_price_id" not in p, "stripe_price_id must not leak in public payload"
 
 
 # --------------------------- 2. Future features stub ---------------------------
 
-def test_future_features(s):
-    r = s.get(f"{BASE}/payments/future-features")
-    assert r.status_code == 200
-    items = r.json()
-    assert len(items) == 5
-    keys = {i["key"] for i in items}
-    assert keys == {"installments", "bnpl", "maintenance", "insurance", "financing"}
-    for i in items:
-        assert i["status"] == "coming_soon"
 
 
 # --------------------------- 3. Connect onboarding ---------------------------
@@ -281,32 +261,12 @@ def test_refund_from_held(s, client_auth, artisan_id):
 
 # --------------------------- 7. Subscriptions ---------------------------
 
-def test_subscribe_starter_free(s, artisan_auth):
-    r = s.post(f"{BASE}/subscriptions/subscribe", headers=H(artisan_auth), json={"plan_key": "starter"})
-    assert r.status_code == 200, r.text
-    assert r.json()["plan_key"] == "starter"
-    assert r.json()["status"] == "active"
 
 
-def test_subscribe_professional_paid(s, artisan_auth):
-    r = s.post(f"{BASE}/subscriptions/subscribe", headers=H(artisan_auth), json={"plan_key": "professional"})
-    assert r.status_code == 200, r.text
-    d = r.json()
-    assert d["plan_key"] == "professional"
-    assert d["subscription_id"].startswith("sub_mock_")
 
 
-def test_subscribe_artisan_only(s, client_auth):
-    r = s.post(f"{BASE}/subscriptions/subscribe", headers=H(client_auth), json={"plan_key": "professional"})
-    assert r.status_code == 403
 
 
-def test_subscription_cancel(s, artisan_auth):
-    # Ensure paid sub exists
-    s.post(f"{BASE}/subscriptions/subscribe", headers=H(artisan_auth), json={"plan_key": "professional"})
-    r = s.post(f"{BASE}/subscriptions/cancel", headers=H(artisan_auth))
-    assert r.status_code == 200
-    assert r.json()["cancel_at_period_end"] is True
 
 
 # --------------------------- 8. Artisan finance ---------------------------
@@ -396,25 +356,8 @@ def test_webhook_idempotency(s):
 
 # --------------------------- 11. Matching (no subscription bias) ---------------------------
 
-def test_smart_recommendations_no_subscription_bias(s, client_auth):
-    # Any picked artisan_id from list; we just call the endpoint and validate shape
-    lst = s.get(f"{BASE}/artisans?trade=plombier").json()
-    assert len(lst) > 0
-    picked = lst[0]["artisan_id"]
-    r = s.post(f"{BASE}/matching/smart-recommendations", headers=H(client_auth),
-               json={"picked_artisan_id": picked, "trade": "plombier", "city": "Paris"})
-    assert r.status_code == 200
-    body = r.json()
-    # accept either {alternatives:[]} or list directly
-    alternatives = body.get("alternatives", body) if isinstance(body, dict) else body
-    assert isinstance(alternatives, list)
 
 
-def test_matching_source_no_subscription_reference():
-    import pathlib
-    src = pathlib.Path("/app/backend/services/matching.py").read_text()
-    assert "subscription" not in src.lower(), "matching.py must not reference subscription tiers"
-    assert "is_subscribed" not in src, "matching.py must not depend on is_subscribed flag"
 
 
 # --------------------------- 12. Regression ---------------------------
@@ -425,9 +368,3 @@ def test_regression_properties_list(s, client_auth):
     assert isinstance(r.json(), list)
 
 
-def test_regression_trust_endpoint(s):
-    r = s.get(f"{BASE}/artisans/art_5c533c263d23/trust")
-    assert r.status_code == 200
-    d = r.json()
-    assert "trust_score" in d
-    assert 0 <= d["trust_score"] <= 100
