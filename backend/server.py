@@ -34,6 +34,19 @@ from routes.interventions import build_interventions_router
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
 
+# Boot-time validation: Apple audience list is safe for the current env.
+# In production this REFUSES TO START if the Expo Go audience leaks in.
+from routes.auth import verify_apple_audiences_config, AppleAudiencesConfigError
+try:
+    _APPLE_AUDS = verify_apple_audiences_config()
+    logging.getLogger(__name__).info(
+        "Apple audiences validated for APP_ENV=%s → %s",
+        os.environ.get("APP_ENV", "development"), _APPLE_AUDS,
+    )
+except AppleAudiencesConfigError as _exc:
+    # Fail-fast: never serve a request with an unsafe audience list.
+    raise SystemExit(f"[FATAL] Apple audiences config invalid: {_exc}") from _exc
+
 mongo_url = os.environ['MONGO_URL']
 client = AsyncIOMotorClient(mongo_url)
 db = client[os.environ['DB_NAME']]

@@ -189,6 +189,7 @@ async def _link_provider(db, user_id: str, provider: str, sub: Optional[str]) ->
 # -------------------------------------------------------------
 APPLE_ISSUER = "https://appleid.apple.com"
 APPLE_JWKS_URL = "https://appleid.apple.com/auth/keys"
+_APPLE_EXPO_GO_AUD = "host.exp.Exponent"  # MUST NEVER appear in prod audiences.
 _apple_jwks_client: Optional[PyJWKClient] = None
 
 
@@ -200,13 +201,74 @@ def _get_apple_jwks_client() -> PyJWKClient:
     return _apple_jwks_client
 
 
+class AppleAudiencesConfigError(RuntimeError):
+    """Raised at boot when APPLE_AUDIENCES_PROD contains the Expo Go audience.
+
+    This is a structural safeguard: it is impossible to leak the Expo Go
+    audience (`host.exp.Exponent`) into a production build because the
+    process will refuse to start with a clear, actionable error message.
+    """
+
+
 def _apple_audiences() -> list[str]:
-    raw = os.environ.get("APPLE_AUDIENCES", "").strip()
-    if not raw:
-        # Sensible defaults for Expo Go + our bundle id if configured.
-        default_bundle = "com.emergent.reviensapp.uwn3nc"
-        return [default_bundle, "host.exp.Exponent"]
-    return [a.strip() for a in raw.split(",") if a.strip()]
+    """
+    Return the list of accepted `aud` claims for Apple identity tokens,
+    chosen automatically based on `APP_ENV`.
+
+    Rules:
+    - `APP_ENV=production` → uses `APPLE_AUDIENCES_PROD` ONLY (real iOS bundle
+      identifier). Startup fails if the env var contains the Expo Go audience
+      or if the env var is empty.
+    - Any other environment (dev / staging / preview) → uses
+      `APPLE_AUDIENCES_DEV`, defaulting to `[bundle_id, "host.exp.Exponent"]`
+      so Expo Go can authenticate during development.
+
+    Legacy `APPLE_AUDIENCES` is still accepted as a fallback for dev only,
+    to keep older setups working. In production it is IGNORED.
+    """
+    app_env = os.environ.get("APP_ENV", "development").strip().lower()
+    default_bundle = "com.emergent.reviensapp.uwn3nc"
+
+    if app_env == "production":
+        raw = os.environ.get("APPLE_AUDIENCES_PROD", "").strip()
+        if not raw:
+            raise AppleAudiencesConfigError(
+                "APPLE_AUDIENCES_PROD is required in production. Set it to the "
+                "real iOS bundle identifier (e.g. 'com.faqtotum.app'). Never "
+                "include 'host.exp.Exponent' in production."
+            )
+        audiences = [a.strip() for a in raw.split(",") if a.strip()]
+        if _APPLE_EXPO_GO_AUD in audiences:
+            raise AppleAudiencesConfigError(
+                f"APPLE_AUDIENCES_PROD contains '{_APPLE_EXPO_GO_AUD}' which is the "
+                "Expo Go development audience. This MUST NOT be exposed in a "
+                "production build. Remove it and restart."
+            )
+        return audiences
+
+    # Non-production: prefer APPLE_AUDIENCES_DEV, fall back to legacy
+    # APPLE_AUDIENCES, then to sensible defaults.
+    raw = (
+        os.environ.get("APPLE_AUDIENCES_DEV", "").strip()
+        or os.environ.get("APPLE_AUDIENCES", "").strip()
+    )
+    if raw:
+        return [a.strip() for a in raw.split(",") if a.strip()]
+    return [default_bundle, _APPLE_EXPO_GO_AUD]
+
+
+def verify_apple_audiences_config() -> list[str]:
+    """
+    Boot-time validation for the Apple audiences configuration.
+
+    Called from `server.py` right after `load_dotenv()` so a mis-configured
+    production deploy fails FAST (before serving any request) rather than
+    letting an insecure audience list leak into the running app.
+
+    Returns the resolved audience list on success (useful for logging).
+    Raises AppleAudiencesConfigError with an actionable message on failure.
+    """
+    return _apple_audiences()
 
 
 def _verify_apple_identity_token(
