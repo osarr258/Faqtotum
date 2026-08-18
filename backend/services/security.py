@@ -11,6 +11,7 @@ Handles:
 - IoT trust preparation
 """
 from __future__ import annotations
+import base64
 import hashlib
 import json
 import os
@@ -429,8 +430,47 @@ async def anonymize_user(db, user_id: str) -> Dict[str, Any]:
 
 
 # ---------------------------------------------------------------
-# MFA / Biometrics (Architecture stubs)
+# MFA / Biometrics — RFC 6238 TOTP
 # ---------------------------------------------------------------
+#
+# Secrets are stored ENCRYPTED at rest with Fernet (symmetric AES-128-CBC + HMAC).
+# The key is read from `MFA_ENCRYPTION_KEY` (urlsafe base64, 32 bytes).
+# - In production, this MUST be set explicitly; otherwise we fail-closed.
+# - In development, we derive a stable ephemeral key from a well-known
+#   placeholder so tests remain deterministic (the placeholder key is NOT
+#   secret — it must never be used to store real secrets).
+_MFA_ISSUER = "Faqtotum"
+
+
+def _get_mfa_fernet():
+    """Return a Fernet instance for encrypting/decrypting MFA secrets."""
+    from cryptography.fernet import Fernet
+    key = os.environ.get("MFA_ENCRYPTION_KEY", "").strip()
+    app_env = os.environ.get("APP_ENV", "development").strip().lower()
+    if not key:
+        if app_env == "production":
+            raise HTTPException(
+                status_code=500,
+                detail="MFA_ENCRYPTION_KEY manquante en production",
+            )
+        # Dev/test only — deterministic ephemeral key.
+        key = base64.urlsafe_b64encode(
+            hashlib.sha256(b"faqtotum-dev-mfa-ephemeral-key").digest()
+        ).decode()
+    try:
+        return Fernet(key.encode() if isinstance(key, str) else key)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"MFA_ENCRYPTION_KEY invalide: {e}")
+
+
+def _encrypt_secret(secret_b32: str) -> str:
+    return _get_mfa_fernet().encrypt(secret_b32.encode()).decode()
+
+
+def _decrypt_secret(ciphertext: str) -> str:
+    return _get_mfa_fernet().decrypt(ciphertext.encode()).decode()
+
+
 async def mfa_status(db, user_id: str) -> Dict[str, Any]:
     doc = await db.mfa_settings.find_one({"user_id": user_id}, {"_id": 0})
     if not doc:
@@ -441,49 +481,99 @@ async def mfa_status(db, user_id: str) -> Dict[str, Any]:
             "biometrics_enrolled": False,
             "backup_codes_remaining": 0,
         }
+    # Never expose the encrypted secret to callers.
+    doc.pop("secret_pending_enc", None)
+    doc.pop("secret_enc", None)
     return doc
 
 
 async def mfa_prepare(db, user_id: str, method: str = "totp") -> Dict[str, Any]:
     """
-    Prepare MFA enrollment (stub). Full TOTP with pyotp will be added later.
-    Returns a placeholder secret + provisioning URI structure.
+    Prepare MFA enrollment with a fresh TOTP secret (RFC 6238).
+
+    - Generates a 160-bit base32 secret via `pyotp.random_base32()`.
+    - Encrypts the secret at rest with Fernet.
+    - Returns the plaintext secret + provisioning URI (`otpauth://…`)
+      ONLY during enrollment so the client can display a QR code and
+      the user can register the account in their authenticator app.
     """
+    import pyotp
     if method not in ("totp", "sms", "biometrics"):
         raise HTTPException(status_code=400, detail="Méthode MFA non supportée")
-    secret_placeholder = secrets.token_hex(16).upper()
+    if method != "totp":
+        raise HTTPException(
+            status_code=400,
+            detail="Seule la méthode TOTP est supportée en V1",
+        )
+    secret_b32 = pyotp.random_base32()
+    provisioning_uri = pyotp.TOTP(secret_b32).provisioning_uri(
+        name=user_id, issuer_name=_MFA_ISSUER
+    )
     await db.mfa_settings.update_one(
         {"user_id": user_id},
         {"$set": {
             "user_id": user_id,
             "method": method,
-            "secret_pending": secret_placeholder,
+            "secret_pending_enc": _encrypt_secret(secret_b32),
             "enabled": False,
             "prepared_at": now_iso(),
-        }},
+        },
+         "$unset": {"secret_pending": ""}},  # remove any old plaintext leftover
         upsert=True,
     )
     return {
         "method": method,
-        "secret": secret_placeholder,
-        "provisioning_uri": f"otpauth://totp/Auxora:{user_id}?secret={secret_placeholder}&issuer=Auxora",
+        "secret": secret_b32,
+        "provisioning_uri": provisioning_uri,
+        "issuer": _MFA_ISSUER,
         "status": "prepared",
-        "note": "Architecture prête — validation TOTP à activer via pyotp dans un prochain sprint.",
     }
+
+
+def _totp_verify(secret_b32: str, code: str, valid_window: int = 1) -> bool:
+    """Verify a 6-digit TOTP code with ±1 period tolerance (default)."""
+    import pyotp
+    if not code or len(code) != 6 or not code.isdigit():
+        return False
+    return pyotp.TOTP(secret_b32).verify(code, valid_window=valid_window)
 
 
 async def mfa_verify_stub(db, user_id: str, code: str) -> Dict[str, Any]:
     """
-    Verify an MFA enrollment code.
+    Verify an MFA code.
 
-    Security: the historical "000000" demo bypass is now GATED behind an
-    explicit environment variable so it can never leak to production.
+    Priority:
+    1. If there is a pending or active TOTP secret → verify the 6-digit code
+       against pyotp with a ±1 period window (RFC 6238, standard tolerance
+       for clock drift). On success, promote `secret_pending_enc` → `secret_enc`
+       and flip `enabled=True`.
+    2. Otherwise (no secret enrolled) fall back to the demo bypass — but only
+       when BOTH `MFA_DEMO_MODE=true` AND `APP_ENV != production`.
+       In every other configuration, the demo bypass is closed.
 
-    Rules:
-    - `MFA_DEMO_MODE=true` AND `APP_ENV != "production"` → "000000" is accepted.
-    - In any other configuration (default / prod) → "000000" is rejected.
-    - Real TOTP (pyotp) implementation is planned to replace this stub.
+    Demo mode is intended solely for automated tests and preview builds where
+    setting up a real authenticator app is impractical. Real users always go
+    through the real TOTP flow.
     """
+    doc = await db.mfa_settings.find_one({"user_id": user_id}) or {}
+    enc = doc.get("secret_pending_enc") or doc.get("secret_enc")
+    if enc:
+        try:
+            secret_b32 = _decrypt_secret(enc)
+        except Exception:
+            raise HTTPException(status_code=500, detail="Secret MFA corrompu")
+        if _totp_verify(secret_b32, code, valid_window=1):
+            # Promote pending → active on first successful verification.
+            update = {"$set": {"enabled": True, "activated_at": now_iso()}}
+            if doc.get("secret_pending_enc"):
+                update["$set"]["secret_enc"] = doc["secret_pending_enc"]
+                update["$unset"] = {"secret_pending_enc": ""}
+            await db.mfa_settings.update_one({"user_id": user_id}, update)
+            return {"ok": True, "enabled": True, "message": "MFA activée"}
+        # Real secret exists but code is wrong — no fallback to demo mode.
+        raise HTTPException(status_code=400, detail="Code MFA invalide")
+
+    # No enrolled secret → demo bypass ONLY in dev + explicit flag.
     demo_enabled = (
         os.environ.get("MFA_DEMO_MODE", "").strip().lower() == "true"
         and os.environ.get("APP_ENV", "development").strip().lower() != "production"
@@ -491,17 +581,24 @@ async def mfa_verify_stub(db, user_id: str, code: str) -> Dict[str, Any]:
     if demo_enabled and code == "000000":
         await db.mfa_settings.update_one(
             {"user_id": user_id},
-            {"$set": {"enabled": True, "activated_at": now_iso()}},
+            {"$set": {
+                "user_id": user_id,
+                "method": "totp",
+                "enabled": True,
+                "activated_at": now_iso(),
+                "demo_mode": True,
+            }},
+            upsert=True,
         )
         return {"ok": True, "enabled": True, "message": "MFA activée (mode démo)"}
-    # Reject everything else (including "000000" outside demo mode).
     raise HTTPException(status_code=400, detail="Code MFA invalide")
 
 
 async def mfa_disable(db, user_id: str) -> Dict[str, Any]:
     await db.mfa_settings.update_one(
         {"user_id": user_id},
-        {"$set": {"enabled": False, "disabled_at": now_iso()}},
+        {"$set": {"enabled": False, "disabled_at": now_iso()},
+         "$unset": {"secret_enc": "", "secret_pending_enc": ""}},
     )
     return {"enabled": False}
 

@@ -133,11 +133,25 @@ def build_security_router(db, get_current_user, require_roles):
             {"user_id": user["user_id"]},
             {"$set": {"password": _hash_password(data.new_password), "password_changed_at": _now_utc().isoformat()}},
         )
+        # Security: revoke every OTHER active session for this user so any
+        # stolen/leaked token becomes useless immediately. The caller's own
+        # session (identified by `_current_token`) is preserved to avoid an
+        # immediate logout right after a successful password change.
+        current_token = user.get("_current_token", "")
+        revoked_count = await security_svc.revoke_all_sessions_except(
+            db, user["user_id"], current_token
+        )
         await security_svc.audit_log(
             db, action="password.changed", actor_id=user["user_id"],
-            actor_role=user.get("role"), severity="critical",
+            actor_role=user.get("role"),
+            metadata={"other_sessions_revoked": revoked_count},
+            severity="critical",
         )
-        return {"ok": True, "message": "Mot de passe modifié"}
+        return {
+            "ok": True,
+            "message": "Mot de passe modifié",
+            "other_sessions_revoked": revoked_count,
+        }
 
     # ----- Audit Logs -----
     @r.get("/audit")

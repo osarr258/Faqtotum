@@ -123,20 +123,27 @@ def test_gdpr_export(headers):
 # ---------- MFA ----------
 
 def test_mfa_flow(headers):
+    import pyotp
+
     r = requests.get(f"{API}/security/mfa", headers=headers, timeout=10)
     assert r.status_code == 200
 
     r = requests.post(f"{API}/security/mfa/prepare", json={"method": "totp"}, headers=headers, timeout=10)
     assert r.status_code == 200
-    assert "secret" in r.json()
-    assert "provisioning_uri" in r.json()
+    body = r.json()
+    assert "secret" in body
+    assert "provisioning_uri" in body
+    secret = body["secret"]
+    # Provisioning URI must be a valid otpauth:// TOTP URI.
+    assert body["provisioning_uri"].startswith("otpauth://totp/")
 
     # Bad code
     r_bad = requests.post(f"{API}/security/mfa/verify", json={"code": "999999"}, headers=headers, timeout=10)
     assert r_bad.status_code == 400
 
-    # Demo code
-    r_ok = requests.post(f"{API}/security/mfa/verify", json={"code": "000000"}, headers=headers, timeout=10)
+    # Real TOTP code derived from the secret returned by /prepare
+    valid_code = pyotp.TOTP(secret).now()
+    r_ok = requests.post(f"{API}/security/mfa/verify", json={"code": valid_code}, headers=headers, timeout=10)
     assert r_ok.status_code == 200 and r_ok.json()["enabled"] is True
 
     # Disable

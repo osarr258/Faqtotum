@@ -2702,6 +2702,24 @@ class ReminderInput(BaseModel):
     equipment_id: Optional[str] = None
     notes: Optional[str] = ""
 
+
+class ReminderPatchInput(BaseModel):
+    """
+    Strict allow-list for PATCH /properties/{pid}/reminders/{rid}.
+
+    Extra fields are REJECTED (`extra="forbid"`) so a malicious client cannot
+    inject fields like `user_id`, `property_id`, `reminder_id`, `created_at`
+    or arbitrary keys via mass-assignment.
+    """
+    title: Optional[str] = None
+    due_on: Optional[str] = None
+    frequency: Optional[str] = None
+    equipment_id: Optional[str] = None
+    notes: Optional[str] = None
+    status: Optional[str] = None
+
+    model_config = {"extra": "forbid"}
+
 async def _get_property(pid: str, user_id: str) -> dict:
     prop = await db.properties.find_one({"property_id": pid, "user_id": user_id}, {"_id": 0})
     if not prop:
@@ -2923,12 +2941,18 @@ async def create_reminder(pid: str, body: ReminderInput, user=Depends(get_curren
     return r
 
 @api_router.patch("/properties/{pid}/reminders/{rid}")
-async def update_reminder(pid: str, rid: str, body: dict, user=Depends(get_current_user)):
+async def update_reminder(pid: str, rid: str, body: ReminderPatchInput, user=Depends(get_current_user)):
     await _get_property(pid, user["user_id"])
-    if "status" in body and body["status"] not in REMINDER_STATUSES:
+    # `exclude_unset` → only fields explicitly sent by the client are updated.
+    updates = body.model_dump(exclude_unset=True)
+    if not updates:
+        raise HTTPException(status_code=400, detail="Aucun champ à modifier")
+    if "status" in updates and updates["status"] not in REMINDER_STATUSES:
         raise HTTPException(status_code=400, detail="Statut invalide")
-    body["updated_at"] = now_utc().isoformat()
-    await db.property_reminders.update_one({"reminder_id": rid, "property_id": pid}, {"$set": body})
+    updates["updated_at"] = now_utc().isoformat()
+    await db.property_reminders.update_one(
+        {"reminder_id": rid, "property_id": pid}, {"$set": updates}
+    )
     return await db.property_reminders.find_one({"reminder_id": rid}, {"_id": 0})
 
 @api_router.delete("/properties/{pid}/reminders/{rid}")
