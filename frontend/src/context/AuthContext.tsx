@@ -27,6 +27,7 @@ type AuthState = {
   register: (email: string, password: string, name: string, role: string) => Promise<void>;
   login: (email: string, password: string) => Promise<void>;
   loginWithGoogle: (role: string) => Promise<void>;
+  loginWithApple: (role: string) => Promise<void>;
   logout: () => Promise<void>;
   refresh: () => Promise<void>;
   unlockWithBiometric: () => Promise<boolean>;
@@ -197,6 +198,60 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setTimeout(() => promptEnableBiometric(), 800);
   };
 
+  const loginWithApple = async (role: string) => {
+    if (Platform.OS !== "ios") {
+      Alert.alert("Non disponible", "Apple Sign-In n'est disponible que sur iOS.");
+      return;
+    }
+    const AppleAuth = await import("expo-apple-authentication");
+    const isAvail = await AppleAuth.isAvailableAsync();
+    if (!isAvail) {
+      Alert.alert("Non disponible", "Ce compte iCloud ne peut pas utiliser Apple Sign-In.");
+      return;
+    }
+    // Generate a raw nonce; Apple echoes its SHA-256 in the identity token.
+    const rawNonce = Array.from({ length: 32 }, () =>
+      Math.floor(Math.random() * 36).toString(36),
+    ).join("");
+    const hashedNonce = await (async () => {
+      // Expo Crypto might not be available; fall back to sending raw only.
+      try {
+        const Crypto = await import("expo-crypto");
+        return await Crypto.digestStringAsync(
+          Crypto.CryptoDigestAlgorithm.SHA256,
+          rawNonce,
+        );
+      } catch {
+        return undefined;
+      }
+    })();
+    const credential = await AppleAuth.signInAsync({
+      requestedScopes: [
+        AppleAuth.AppleAuthenticationScope.FULL_NAME,
+        AppleAuth.AppleAuthenticationScope.EMAIL,
+      ],
+      nonce: hashedNonce, // Apple hashes it into the JWT `nonce` claim.
+    });
+    if (!credential?.identityToken) return;
+    const data = await api<{ token: string; user: User }>("/auth/apple", {
+      method: "POST",
+      auth: false,
+      body: {
+        identity_token: credential.identityToken,
+        // First sign-in only: Apple returns fullName + email once.
+        email: credential.email || undefined,
+        first_name: credential.fullName?.givenName || undefined,
+        last_name: credential.fullName?.familyName || undefined,
+        nonce: rawNonce, // backend hashes it and compares with the JWT claim.
+        role,
+      },
+    });
+    await setToken(data.token);
+    setUser(data.user);
+    setLocked(false);
+    setTimeout(() => promptEnableBiometric(), 800);
+  };
+
   const logout = async () => {
     try {
       await api("/auth/logout", { method: "POST" });
@@ -242,6 +297,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         register,
         login,
         loginWithGoogle,
+        loginWithApple,
         logout,
         refresh: loadMe,
         unlockWithBiometric,

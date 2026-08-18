@@ -11,7 +11,7 @@ export default function Auth() {
   const { role = "client" } = useLocalSearchParams<{ role: string }>();
   const router = useRouter();
   const insets = useSafeAreaInsets();
-  const { register, login, loginWithGoogle } = useAuth();
+  const { register, login, loginWithGoogle, loginWithApple } = useAuth();
 
   const [mode, setMode] = useState<"login" | "register">("register");
   const [name, setName] = useState("");
@@ -19,6 +19,7 @@ export default function Auth() {
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
   const [googleLoading, setGoogleLoading] = useState(false);
+  const [appleLoading, setAppleLoading] = useState(false);
   const [error, setError] = useState("");
 
   const isArtisan = role === "artisan";
@@ -54,6 +55,24 @@ export default function Auth() {
       setError(e.message || "Connexion Google échouée");
     } finally {
       setGoogleLoading(false);
+    }
+  };
+
+  const apple = async () => {
+    setError("");
+    setAppleLoading(true);
+    try {
+      await loginWithApple(role as string);
+      router.replace("/");
+    } catch (e: any) {
+      // User cancelled → don't show a scary error
+      if (e?.code === "ERR_REQUEST_CANCELED" || /cancel/i.test(e?.message || "")) {
+        // silent
+      } else {
+        setError(e.message || "Connexion Apple échouée");
+      }
+    } finally {
+      setAppleLoading(false);
     }
   };
 
@@ -102,6 +121,9 @@ export default function Auth() {
         </View>
 
         <Button testID="google-button" title="Continuer avec Google" variant="outline" icon="logo-google" loading={googleLoading} onPress={google} />
+        {Platform.OS === "ios" && (
+          <Button testID="apple-button" title="Continuer avec Apple" variant="outline" icon="logo-apple" loading={appleLoading} onPress={apple} />
+        )}
 
         <Pressable testID="toggle-mode" onPress={() => setMode(mode === "register" ? "login" : "register")} style={{ marginTop: spacing.xl, alignItems: "center" }}>
           <Txt color={colors.muted}>

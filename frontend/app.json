@@ -14,7 +14,8 @@
         "NSLocationWhenInUseUsageDescription": "Trouver les artisans proches de vous",
         "NSFaceIDUsageDescription": "Déverrouillez Faqtotum avec Face ID"
       },
-      "bundleIdentifier": "com.emergent.reviensapp.uwn3nc"
+      "bundleIdentifier": "com.emergent.reviensapp.uwn3nc",
+      "usesAppleSignIn": true
     },
     "android": {
       "adaptiveIcon": {

@@ -89,9 +89,16 @@ def parse_device_info(user_agent: str, ip: str) -> Dict[str, str]:
 
 
 async def create_secure_session(
-    db, user_id: str, request: Optional[Request] = None, days: int = 7
+    db, user_id: str, request: Optional[Request] = None, days: int = 7,
+    method: str = "email",
 ) -> Dict[str, Any]:
-    """Create a secure session with device fingerprinting."""
+    """Create a secure session with device fingerprinting.
+
+    Args:
+        method: How the user authenticated for this session.
+            One of "email" (password), "google", "apple", or "biometric".
+            Stored on the session doc for audit-chain traceability.
+    """
     token = secrets.token_urlsafe(48)
     ua = ""
     ip = "unknown"
@@ -107,6 +114,7 @@ async def create_secure_session(
     session = {
         "session_token": token,
         "user_id": user_id,
+        "method": method if method in ("email", "google", "apple", "biometric") else "email",
         "device": device["device"],
         "browser": device["browser"],
         "user_agent": device["user_agent"],
@@ -117,7 +125,7 @@ async def create_secure_session(
         "revoked": False,
     }
     await db.user_sessions.insert_one(session)
-    return {"token": token, "session_id": token[:12], **device}
+    return {"token": token, "session_id": token[:12], "method": session["method"], **device}
 
 
 async def list_user_sessions(db, user_id: str) -> List[Dict[str, Any]]:
