@@ -1,11 +1,15 @@
 /**
- * FaqtotumLogo — SVG inline du symbole "P à crochet".
+ * FaqtotumLogo — SVG du monogramme FAQTOTUM.
  *
- * Charte FAQTOTUM : trait arrondi épaisseur uniforme, noir sur blanc
- * (ou l'inverse). Le symbole s'inspire du logo officiel v1.0 (mai 2025).
+ * Charte v1.0 (mai 2025) : trait arrondi épaisseur uniforme, boucle
+ * fermée en haut, hampe verticale, crochet horizontal à mi-hauteur.
+ *
+ * Note : pour une fidélité pixel-perfect, remplacez ce SVG par le
+ * fichier officiel fourni par le brand book. Ce composant reste un
+ * substitut proche mais approximatif.
  */
 import React from "react";
-import Svg, { Path } from "react-native-svg";
+import Svg, { Circle, Path } from "react-native-svg";
 
 type Props = {
   size?: number;
@@ -13,30 +17,33 @@ type Props = {
 };
 
 export default function FaqtotumLogo({ size = 28, color = "#000000" }: Props) {
-  // ViewBox 64 x 80 pour respecter les proportions du "P à crochet"
-  // (boucle en haut, hampe verticale, barre horizontale à mi-hauteur).
+  // ViewBox carré 100x100, symbole centré, trait 10 (rond aux extrémités).
+  // La boucle est offset légèrement en haut à droite, la hampe descend
+  // depuis le bas de la boucle et le crochet part vers la gauche à
+  // 65 % de la hauteur.
+  const stroke = 10;
   return (
-    <Svg width={size} height={size * (80 / 64)} viewBox="0 0 64 80" fill="none">
-      {/* Boucle circulaire supérieure (P) */}
-      <Path
-        d="M22 6 C 12 6, 6 14, 6 22 C 6 30, 12 38, 22 38 C 32 38, 38 30, 38 22 C 38 14, 32 6, 22 6 Z"
+    <Svg width={size} height={size} viewBox="0 0 100 100" fill="none">
+      <Circle
+        cx={58}
+        cy={30}
+        r={22}
         stroke={color}
-        strokeWidth={7}
-        strokeLinecap="round"
-        strokeLinejoin="round"
+        strokeWidth={stroke}
+        fill="none"
       />
-      {/* Hampe verticale descendant sous la boucle */}
+      {/* Hampe : du bas de la boucle jusqu'au bas du symbole */}
       <Path
-        d="M22 38 L 22 74"
+        d="M58 52 L 58 92"
         stroke={color}
-        strokeWidth={7}
+        strokeWidth={stroke}
         strokeLinecap="round"
       />
-      {/* Barre horizontale à mi-hampe (le crochet) */}
+      {/* Crochet horizontal à gauche */}
       <Path
-        d="M4 52 L 22 52"
+        d="M18 66 L 58 66"
         stroke={color}
-        strokeWidth={7}
+        strokeWidth={stroke}
         strokeLinecap="round"
       />
     </Svg>
