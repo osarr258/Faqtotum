@@ -253,8 +253,8 @@ export default function ConciergeConversation() {
         },
       );
       router.push({
-        pathname: "/matching",
-        params: { broadcast_id: bc.broadcast_id },
+        pathname: "/broadcast/[id]",
+        params: { id: bc.broadcast_id },
       });
     } catch (e) {
       router.push({ pathname: "/category/[slug]", params: { slug: trade } });

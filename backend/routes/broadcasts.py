@@ -446,4 +446,31 @@ def build_broadcasts_router(
             out.append(item)
         return out
 
+    # -----------------------------------------------------------------
+    # GET /broadcasts/{id} — status polling (client OR winning artisan)
+    # -----------------------------------------------------------------
+    @r.get("/broadcasts/{broadcast_id}")
+    async def get_broadcast(broadcast_id: str, user=Depends(get_current_user)):
+        bc = await db.booking_broadcasts.find_one(
+            {"broadcast_id": broadcast_id}, {"_id": 0},
+        )
+        if not bc:
+            raise HTTPException(status_code=404, detail="Broadcast introuvable")
+        bc = await _refresh_expiry(bc)
+        is_owner = bc.get("client_id") == user["user_id"]
+        is_winner = False
+        if bc.get("winner_artisan_id"):
+            prof = await db.artisan_profiles.find_one(
+                {"artisan_id": bc["winner_artisan_id"]},
+                {"_id": 0, "user_id": 1},
+            )
+            if prof and prof.get("user_id") == user["user_id"]:
+                is_winner = True
+        if not (is_owner or is_winner):
+            raise HTTPException(status_code=404, detail="Broadcast introuvable")
+        out = _public_view(bc)
+        out["candidates_count"] = len(bc.get("candidates") or [])
+        out["winner_booking_id"] = bc.get("winner_booking_id")
+        return out
+
     return r
