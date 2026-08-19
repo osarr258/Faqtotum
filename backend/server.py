@@ -1007,6 +1007,11 @@ async def _artisans_nearby_impl(lat, lng, radius, category, only_available_now, 
         a2["live_updated_at"] = a.get("live_updated_at")
         if only_available_now and not a2["available_now"]:
             continue
+        # FAQTOTUM privacy: strip phone/email/stripe/identity docs from nearby
+        # payload. `current_lat`/`current_lng` restent — nécessaires à la carte.
+        for k in ("phone", "email", "stripe_account_id", "identity_docs",
+                  "insurance_docs", "siret", "iban"):
+            a2.pop(k, None)
         enriched.append(a2)
     enriched.sort(key=lambda x: x["distance_km"])
     return {"artisans": enriched[:limit], "radius_km": radius, "total": len(enriched)}

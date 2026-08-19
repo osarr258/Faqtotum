@@ -247,6 +247,51 @@ def _is_publicly_visible(artisan: Dict[str, Any]) -> bool:
     return vs == "approved"
 
 
+# FAQTOTUM V1 — Privacy: whitelist explicite des champs exposés dans les
+# endpoints PUBLICS (`GET /artisans`, `GET /artisans/{id}`, `/top`, `/nearby`).
+# Toute clé non listée est retirée avant retour. Le téléphone, l'email, la
+# position GPS précise et les métadonnées de vérification ne fuitent jamais.
+PUBLIC_ARTISAN_FIELDS: frozenset[str] = frozenset({
+    # Identité pro
+    "artisan_id", "user_id", "name", "title", "photo",
+    # Métier / description
+    "trade", "trade_name", "trade_icon", "bio",
+    # Réputation
+    "rating", "reviews_count", "jobs_done",
+    "trust_score", "trust_score_v2", "response_min", "acceptance_rate",
+    "completion_rate", "cancellation_rate",
+    # Tarification
+    "hourly_rate",
+    # Visibilité / statut
+    "available", "available_now", "is_subscribed", "verification_status",
+    "years_experience", "emergency_capable", "website", "intervention_zones",
+    "working_hours", "distance_km",
+    # Calcul FAQTOTUM (enrichissement)
+    "confidence_card", "badges",
+    # Compat legacy
+    "created_at",
+})
+
+
+def _public_view(artisan: Dict[str, Any]) -> Dict[str, Any]:
+    """Return a copy of `artisan` with only public-safe fields.
+
+    Retire proprement : phone, email, precise lat/lng, stripe_account_id,
+    identity docs, chiffre d'affaires, etc. Le champ ``city`` est REMPLACÉ
+    par le nom de ville seulement (pas d'adresse complète). Le champ
+    ``lat``/``lng`` reste UNIQUEMENT si dérivé d'une approximation ville —
+    ici on préfère supprimer pour éviter tout risque et calculer
+    ``distance_km`` en amont.
+    """
+    out: Dict[str, Any] = {k: v for k, v in artisan.items() if k in PUBLIC_ARTISAN_FIELDS}
+    # City : garder uniquement la ville, jamais l'adresse. On accepte les
+    # cas où la valeur contient un CP → strip après une éventuelle virgule.
+    raw_city = artisan.get("city")
+    if raw_city:
+        out["city"] = str(raw_city).split(",")[0].strip()
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Router factory
 # ---------------------------------------------------------------------------
@@ -345,7 +390,8 @@ def build_artisans_router(
             )
         else:
             artisans.sort(key=lambda x: x.get("rating", 0), reverse=True)
-        return artisans
+        # FAQTOTUM privacy: strip sensitive fields before returning.
+        return [_public_view(a) for a in artisans]
 
     @r.get("/artisans/top")
     async def top_artisans():
@@ -359,7 +405,7 @@ def build_artisans_router(
         artisans = await db.artisan_profiles.find(query, {"_id": 0}).to_list(500)
         artisans = [await enrich_artisan(a) for a in artisans]
         artisans.sort(key=lambda x: x.get("rating", 0), reverse=True)
-        return artisans[:8]
+        return [_public_view(a) for a in artisans[:8]]
 
     # NOTE: /artisans/nearby, /artisans/{aid}/trust, /artisans/{aid}/badges,
     # /artisans/{aid}/confidence-card and /artisans/{aid}/recompute-trust stay
@@ -535,7 +581,9 @@ def build_artisans_router(
             enriched["trust_score"] = out["trust_score"]
         except Exception as ex:  # noqa: BLE001
             logger.warning(f"trust card computation failed: {ex}")
-        return enriched
+        # FAQTOTUM privacy: strip sensitive fields (phone, email, precise
+        # location, stripe, verification metadata) before returning.
+        return _public_view(enriched)
 
     # -----------------------------------------------------------------------
     # Availability + calendar
