@@ -10,7 +10,7 @@ import * as DocumentPicker from "expo-document-picker";
 import { AudioModule, useAudioRecorder } from "expo-audio";
 import * as FileSystem from "expo-file-system";
 import * as Haptics from "expo-haptics";
-import { Txt, Button } from "@/src/components/ui";
+import { Txt } from "@/src/components/ui";
 import { api } from "@/src/api";
 import { colors, font, fontSize, radius, spacing } from "@/src/theme";
 
@@ -56,7 +56,7 @@ const URGENCY_COLORS: Record<string, string> = {
 };
 
 export default function ConciergeConversation() {
-  const { id } = useLocalSearchParams<{ id: string }>();
+  const { id, mode } = useLocalSearchParams<{ id: string; mode?: string }>();
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const scrollRef = useRef<ScrollView>(null);
@@ -79,7 +79,26 @@ export default function ConciergeConversation() {
         const res = await api<{ session_id: string; state: ConciergeState }>("/concierge/start", { method: "POST", body: {} });
         setSid(res.session_id);
         setCurrent(res.state);
-        setTurns([{ role: "assistant", text: res.state.ai_message, ai_state: res.state, created_at: new Date().toISOString() }]);
+        const initialTurns: Turn[] = [
+          { role: "assistant", text: res.state.ai_message, ai_state: res.state, created_at: new Date().toISOString() },
+        ];
+        // FAQTOTUM V1 — Si l'utilisateur a explicitement demandé "urgence"
+        // ou "planifié" depuis l'accueil, on injecte un system hint pour
+        // que l'IA priorise ce contexte.
+        if (mode === "urgent") {
+          initialTurns.push({
+            role: "system",
+            text: "Vous avez choisi « Intervention immédiate ». Décrivez maintenant votre problème.",
+            created_at: new Date().toISOString(),
+          });
+        } else if (mode === "schedule") {
+          initialTurns.push({
+            role: "system",
+            text: "Vous avez choisi « Réserver un créneau ». Décrivez votre besoin, nous chercherons la meilleure disponibilité.",
+            created_at: new Date().toISOString(),
+          });
+        }
+        setTurns(initialTurns);
         router.setParams({ id: res.session_id });
       } else {
         const s = await api<any>(`/concierge/${id}`);
@@ -91,7 +110,7 @@ export default function ConciergeConversation() {
       }
     } catch {}
     setInitializing(false);
-  }, [id, router]);
+  }, [id, mode, router]);
 
   useEffect(() => { bootstrap(); }, [bootstrap]);
 
@@ -200,6 +219,44 @@ export default function ConciergeConversation() {
     const trade = current?.summary?.trade || current?.detected_trade;
     if (!trade) return;
     router.push({ pathname: "/category/[slug]", params: { slug: trade } });
+  };
+
+  const startUrgentBroadcast = async () => {
+    const sum = current?.summary;
+    const trade = sum?.trade || current?.detected_trade;
+    if (!trade) return;
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy).catch(() => {});
+    setSending(true);
+    try {
+      // Créneau "maintenant" arrondi à l'heure suivante.
+      const now = new Date();
+      const dateIso = now.toISOString().slice(0, 10);
+      const hh = String((now.getHours() + 1) % 24).padStart(2, "0");
+      const bc = await api<{ broadcast_id: string; candidates_count: number }>(
+        "/broadcasts",
+        {
+          method: "POST",
+          body: {
+            trade,
+            date: dateIso,
+            slot: `${hh}:00-${String((parseInt(hh, 10) + 2) % 24).padStart(2, "0")}:00`,
+            description: sum?.problem || current?.live_diagnosis?.issue || "",
+            urgent: true,
+          },
+        },
+      );
+      // Redirection vers l'écran de suivi broadcast (à créer plus tard).
+      // En attendant, on remonte au home client avec un flag.
+      router.push({
+        pathname: "/matching",
+        params: { broadcast_id: bc.broadcast_id },
+      });
+    } catch (e) {
+      // Fallback : ouvre la recherche classique du métier.
+      router.push({ pathname: "/category/[slug]", params: { slug: trade } });
+    } finally {
+      setSending(false);
+    }
   };
 
   if (initializing) {
@@ -322,7 +379,50 @@ export default function ConciergeConversation() {
                 ))}
               </View>
             )}
-            <Button testID="book-artisan-btn" title={`Trouver un ${current.summary.trade_label}`} icon="search" onPress={proceedToArtisan} style={{ marginTop: spacing.lg }} />
+            {/* FAQTOTUM V1 — Toujours 2 boutons finaux. Même si l'IA détecte
+                l'urgence, le client garde le choix. */}
+            <View style={styles.finalActions}>
+              <Pressable
+                testID="cta-urgent"
+                onPress={startUrgentBroadcast}
+                disabled={sending}
+                style={({ pressed }) => [
+                  styles.finalBtn,
+                  styles.finalUrgent,
+                  (pressed || sending) && { opacity: 0.85 },
+                ]}
+              >
+                <Ionicons name="flash" size={18} color={colors.textInverse} />
+                <View style={{ flex: 1, marginLeft: spacing.sm }}>
+                  <Txt weight="extrabold" color={colors.textInverse}>
+                    Intervention immédiate
+                  </Txt>
+                  <Txt size="sm" color="#FFCCCC" style={{ marginTop: 2 }}>
+                    Trouver un artisan disponible maintenant
+                  </Txt>
+                </View>
+              </Pressable>
+              <Pressable
+                testID="cta-schedule"
+                onPress={proceedToArtisan}
+                disabled={sending}
+                style={({ pressed }) => [
+                  styles.finalBtn,
+                  styles.finalSchedule,
+                  (pressed || sending) && { opacity: 0.85 },
+                ]}
+              >
+                <Ionicons name="calendar" size={18} color={colors.textInverse} />
+                <View style={{ flex: 1, marginLeft: spacing.sm }}>
+                  <Txt weight="extrabold" color={colors.textInverse}>
+                    Réserver un créneau
+                  </Txt>
+                  <Txt size="sm" color="#CCCCCC" style={{ marginTop: 2 }}>
+                    Planifier à date choisie
+                  </Txt>
+                </View>
+              </Pressable>
+            </View>
           </View>
         )}
       </ScrollView>
@@ -429,4 +529,8 @@ const styles = StyleSheet.create({
   attachThumb: { width: 60, height: 60, borderRadius: radius.md, overflow: "hidden", position: "relative", borderWidth: 1, borderColor: colors.border },
   attachRemove: { position: "absolute", top: 2, right: 2, width: 18, height: 18, borderRadius: 9, backgroundColor: "rgba(0,0,0,0.7)", alignItems: "center", justifyContent: "center" },
   finishRow: { flexDirection: "row", alignItems: "center", justifyContent: "center", paddingVertical: spacing.sm, backgroundColor: colors.surface, borderTopWidth: 1, borderTopColor: colors.border },
+  finalActions: { marginTop: spacing.lg, gap: spacing.sm },
+  finalBtn: { flexDirection: "row", alignItems: "center", padding: spacing.lg, borderRadius: radius.md },
+  finalUrgent: { backgroundColor: colors.error },
+  finalSchedule: { backgroundColor: colors.brand },
 });

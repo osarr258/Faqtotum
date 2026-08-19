@@ -186,8 +186,17 @@ def build_ai_router(**deps) -> APIRouter:
             "attachments": {"photos_count": len(body.photos_base64 or []), "voice": bool(body.voice_base64)},
             "created_at": concierge.now_iso(),
         }
+        # FAQTOTUM V1 — Hard cap "MAX 3 questions" : compte le nombre de tours
+        # utilisateur DÉJÀ envoyés (le futur turn_user compris = current + 1).
+        # Au 4ᵉ tour utilisateur, on force finish côté IA.
+        user_turns_so_far = sum(
+            1 for t in (session.get("turns") or []) if t.get("role") == "user"
+        )
+        force = user_turns_so_far >= 3
         try:
-            state = await concierge.next_turn(sid, user_text, body.photos_base64)
+            state = await concierge.next_turn(
+                sid, user_text, body.photos_base64, force_finish=force,
+            )
         except Exception as e:
             logger.error(f"concierge next_turn failed: {e}")
             raise HTTPException(status_code=502, detail="AURA n'a pas pu répondre, réessayez dans un instant.")

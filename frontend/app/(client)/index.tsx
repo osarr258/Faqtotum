@@ -99,8 +99,8 @@ export default function ClientHome() {
   const openConcierge = async (mode: "text" | "urgent" | "schedule" = "text") => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
     router.push({
-      pathname: "/concierge",
-      params: mode !== "text" ? { mode } : {},
+      pathname: "/concierge/[id]",
+      params: { id: "new", ...(mode !== "text" ? { mode } : {}) },
     });
   };
 
