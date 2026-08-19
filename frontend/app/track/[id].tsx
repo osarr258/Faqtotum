@@ -70,6 +70,7 @@ const STATUS_LABEL: Record<string, string> = {
   completed: "Intervention terminée",
   cancelled: "Annulée",
   declined: "Refusée",
+  replaced: "Recherche d'un nouvel artisan",
 };
 
 function statusIndex(status: string): number {

@@ -34,6 +34,7 @@ type Profile = {
 };
 
 const BENEFITS = [
+  "1 mois offert pour commencer",
   "Profil visible par tous les clients",
   "Réservations illimitées",
   "Badge « Profil vérifié »",
@@ -185,15 +186,27 @@ export default function Subscription() {
             </View>
             <View style={styles.planPrice}>
               <Txt weight="extrabold" size="4xl">
-                29
+                89,99
               </Txt>
               <View style={{ marginLeft: 4 }}>
-                <Txt weight="bold">€</Txt>
+                <Txt weight="bold">€ HT</Txt>
                 <Txt size="sm" color={colors.muted}>
                   / mois
                 </Txt>
               </View>
             </View>
+          </View>
+
+          <View style={styles.freeMonthBanner}>
+            <Ionicons name="gift" size={14} color={colors.textInverse} />
+            <Txt
+              weight="extrabold"
+              size="sm"
+              color={colors.textInverse}
+              style={{ marginLeft: 6, letterSpacing: 0.5 }}
+            >
+              1 MOIS OFFERT
+            </Txt>
           </View>
 
           <View style={styles.planDivider} />
@@ -354,6 +367,16 @@ const styles = StyleSheet.create({
   planPrice: {
     flexDirection: "row",
     alignItems: "flex-end",
+  },
+  freeMonthBanner: {
+    flexDirection: "row",
+    alignItems: "center",
+    alignSelf: "flex-start",
+    backgroundColor: colors.brand,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: radius.pill,
+    marginTop: spacing.md,
   },
   planDivider: {
     height: 1,

@@ -98,6 +98,10 @@ export default function ClientHome() {
 
   const openConcierge = async (mode: "text" | "urgent" | "schedule" = "text") => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
+    if (mode === "schedule") {
+      router.push("/reserve");
+      return;
+    }
     router.push({
       pathname: "/concierge/[id]",
       params: { id: "new", ...(mode !== "text" ? { mode } : {}) },
@@ -136,32 +140,44 @@ export default function ClientHome() {
       >
         {/* --- Header ------------------------------------------------ */}
         <View style={styles.header}>
-          <View style={styles.logoRow}>
-            <FaqtotumLogo size={22} color={colors.brand} />
-            <Txt
-              weight="bold"
-              size="sm"
-              style={{ marginLeft: 8, letterSpacing: 0.5 }}
-            >
-              faqtotum
-            </Txt>
-          </View>
-          <View style={styles.headerRow}>
-            <View style={{ flex: 1 }}>
-              <Txt size="sm" color={colors.muted}>
-                {greeting},
+          <View style={styles.brandBlock}>
+            <FaqtotumLogo size={32} color={colors.brand} />
+            <View style={{ marginLeft: 10 }}>
+              <Txt
+                weight="extrabold"
+                size="lg"
+                style={{ letterSpacing: -0.3, lineHeight: 20 }}
+              >
+                faqtotum
               </Txt>
-              <Txt weight="extrabold" size="3xl" style={{ marginTop: 2 }}>
-                {firstName || "Client"}
+              <Txt
+                size="sm"
+                color={colors.muted}
+                style={{ letterSpacing: 0.5, marginTop: -2 }}
+              >
+                votre expert du quotidien
               </Txt>
             </View>
+            <View style={{ flex: 1 }} />
             <Pressable
               testID="header-avatar"
               onPress={() => router.push("/(client)/profile")}
               hitSlop={10}
             >
-              <Avatar name={user?.name} size={44} />
+              <Avatar name={user?.name} size={40} />
             </Pressable>
+          </View>
+          <View style={{ marginTop: spacing.xl }}>
+            <Txt size="sm" color={colors.muted}>
+              {greeting},
+            </Txt>
+            <Txt
+              weight="extrabold"
+              size="3xl"
+              style={{ marginTop: 2, letterSpacing: -0.5 }}
+            >
+              {firstName || "Client"}
+            </Txt>
           </View>
         </View>
 
@@ -415,6 +431,10 @@ const styles = StyleSheet.create({
   header: {
     paddingHorizontal: spacing.lg,
     marginBottom: spacing.lg,
+  },
+  brandBlock: {
+    flexDirection: "row",
+    alignItems: "center",
   },
   logoRow: {
     flexDirection: "row",

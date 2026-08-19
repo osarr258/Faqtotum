@@ -30,14 +30,28 @@ from fastapi import HTTPException
 BOOKING_TRANSITIONS: Dict[Tuple[str, str], Set[str]] = {
     ("pending", "artisan"):   {"accepted", "declined"},
     ("pending", "client"):    {"cancelled"},
-    ("accepted", "artisan"):  {"completed", "cancelled"},
+    # FAQTOTUM V1 — États de progression étendus (En route, Arrivé, En cours).
+    ("accepted", "artisan"):  {"en_route", "in_progress", "completed", "cancelled", "replaced"},
     ("accepted", "client"):   {"cancelled"},
-    ("completed", "artisan"): set(),   # terminal
-    ("completed", "client"):  set(),   # terminal
+    ("en_route", "artisan"):  {"arrived", "cancelled", "replaced"},
+    ("en_route", "client"):   {"cancelled"},
+    ("arrived", "artisan"):   {"in_progress", "cancelled", "replaced"},
+    ("arrived", "client"):    set(),
+    ("in_progress", "artisan"): {"completed"},
+    ("in_progress", "client"):  set(),
+    ("completed", "artisan"): set(),
+    ("completed", "client"):  set(),
     ("declined", "artisan"):  set(),
     ("declined", "client"):   set(),
     ("cancelled", "artisan"): set(),
     ("cancelled", "client"):  set(),
+    # FAQTOTUM V1 — "Artisan remplacé" (§23) : le booking est marqué
+    # replaced, un nouveau matching est lancé automatiquement, le client
+    # ne recommence PAS son parcours. Transition system-only (pas d'acteur
+    # externe direct) — représenté par le system role via l'admin path.
+    ("replaced", "artisan"):  set(),
+    ("replaced", "client"):   set(),
+    ("replaced", "system"):   {"pending"},  # relance auto du matching
 }
 BOOKING_TERMINAL = {"completed", "declined", "cancelled"}
 
