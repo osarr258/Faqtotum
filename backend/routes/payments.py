@@ -17,6 +17,7 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from services import payments, paypal as paypal_svc, trust_engine, security
+from services import emails as email_svc
 from datetime import datetime, timezone
 
 # `db`, `get_current_user`, and every helper/service/model this module needs
@@ -468,6 +469,23 @@ def build_payments_router(**deps) -> APIRouter:
             actor_id=user["user_id"], target=iv_id,
             metadata={"amount_cents": iv.get("balance_cents")}, severity="critical",
         )
+        # Email confirmation paiement au client (fire-and-forget).
+        try:
+            client_email = user.get("email")
+            if client_email:
+                amount = int(
+                    iv.get("balance_cents")
+                    or iv.get("total_amount_cents")
+                    or 0,
+                )
+                subj, html = email_svc.tpl_payment_confirmed(
+                    user.get("name") or "client", amount, iv_id,
+                )
+                await email_svc.send_email_safe(
+                    to=client_email, subject=subj, html=html,
+                )
+        except Exception:
+            pass
         return {"ok": True, "status": "awaiting_validation"}
 
 
@@ -529,6 +547,24 @@ def build_payments_router(**deps) -> APIRouter:
             actor_id=user["user_id"], target=iv_id,
             metadata={k: v for k, v in result.items() if k != "ok"}, severity="critical",
         )
+        # Email de validation à l'artisan (fire-and-forget).
+        try:
+            artisan_user_id = iv.get("artisan_user_id")
+            if artisan_user_id:
+                artisan_user = await db.users.find_one(
+                    {"user_id": artisan_user_id},
+                    {"_id": 0, "email": 1, "name": 1},
+                )
+                if artisan_user and artisan_user.get("email"):
+                    net = int(result.get("net_cents") or 0)
+                    subj, html = email_svc.tpl_intervention_validated(
+                        artisan_user.get("name") or "artisan", net, iv_id,
+                    )
+                    await email_svc.send_email_safe(
+                        to=artisan_user["email"], subject=subj, html=html,
+                    )
+        except Exception:
+            pass
         return result
 
 

@@ -1,0 +1,46 @@
+{
+  "summary": "Sprint 1 Brique 2 (Resend / e-mails transactionnels) — TESTÉ ET VALIDÉ côté backend. 21/21 tests d'intégration passent (test_sprint1_b2_emails_integration.py). Régression: 14/14 test_emails.py + 15/15 test_oauth_hardening.py + 12/12 test_mfa_bypass_hardening.py + 35/35 sprint14/security + 22/22 sprint14 mission flow → tous PASS. Preuve du non-blocage capturée dans les logs uvicorn: Resend retourne 429 (rate limited après tests répétés), send_email lève 502, send_email_safe l'AVALE (warning uniquement) et register/booking/forgot retournent 200 en <10s. Password reset flow full end-to-end: forgot → token hashé SHA-256 stocké → reset → sessions révoquées → nouveau login OK, ancien token 401. Token expiré rejeté (400). Token one-shot vérifié. Anti-énumération OK (200 constant pour email connu/inconnu). Guardrail G2/G3 rejette form/http/shortener/anchor-spoofing/credential-ask. Aucun régression détectée.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {
+        "endpoint": "/api/auth/register + /api/bookings",
+        "issue": "Resend est actuellement RATE-LIMITED côté proxy Emergent (429) dans le preview — tous les envois réels échouent silencieusement. Non bloquant pour l'app (send_email_safe swallow OK), mais aucun e-mail réel n'arrive pendant les tests répétés. À confirmer si c'est un quota partagé du preview ou une conf par clé EMERGENT_EMAIL_KEY."
+      }
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_sprint1_b2_emails_integration.py",
+    "/app/test_reports/pytest/sprint1_b2_integration.xml",
+    "/app/test_reports/pytest/sprint1_b2_regression.xml",
+    "/app/test_reports/pytest/sprint1_b2_wide_regression.xml"
+  ],
+  "action_items": [
+    "Aucune action bloquante. Le câblage e-mail est correct et 100% non-bloquant.",
+    "OPTIONNEL: investiguer pourquoi le proxy Emergent renvoie 429 rate_limited de manière persistante sur EMERGENT_EMAIL_KEY (peut nuire aux e-mails réels en prod si le quota est bas)."
+  ],
+  "critical_code_review_comments": [
+    "routes/auth.py:698 — send_email_safe est bien appelé sur /password/forgot mais dans un bloc SANS try/except (contrairement à bookings.py). Ce n'est pas gênant car send_email_safe ne lève JAMAIS (contrat du service), mais pour la cohérence de style avec bookings.py/payments.py, on pourrait envelopper. NON-BLOQUANT.",
+    "routes/auth.py:713 — password_reset compare `token_hash` en base via find_one() puis update_one({used:False}). Bonne pratique atomic swap → protège contre double-usage concurrent. OK.",
+    "services/emails.py:39-40 — EMAIL_BASE_URL est intentionnellement hardcodé (commenté 'ne PAS lire depuis env'). Cohérent avec le playbook. OK.",
+    "services/emails.py:112 — _assert_safe_email est appelé UNIQUEMENT dans send_email() strict, pas dans send_email_safe() directement. C'est OK car _safe délègue à send_email(), donc la gate est traversée. Vérifié dans le code (ligne 202)."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_sprint1_b2_emails_integration.py (créé — 21 tests)"
+  ],
+  "success_rate": {
+    "backend": "100% (21/21 nouveaux tests intégration + 44/44 régression auth/email/mfa + 35/35 sprint14/security + 22/22 mission_flow)",
+    "frontend": "N/A (backend-only per request)"
+  },
+  "seed_data_creation": "Aucune — utilisation de client.test@auxora.fr (déjà seedé, MDP Test1234! restauré par l'agent principal) + création/cleanup de users éphémères test_<uuid>@auxora.fr dans chaque test.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Le fichier tests/test_sprint1_b2_emails_integration.py est réutilisable pour toute régression future sur (a) le câblage e-mail dans /register /bookings /interventions/*, (b) le flux password reset (forgot + reset), (c) les guardrails G2/G3. Les tests captent le token de reset via l'injection MongoDB directe (le raw n'est jamais retourné par l'API). Le rate limit Resend 429 dans le preview est ATTENDU et NE FAIT PAS échouer les tests (grâce à send_email_safe).",
+  "rca_of_issue": "N/A — aucun bug détecté. Câblage Sprint 1 Brique 2 conforme au spec. Points de validation: (1) welcome email trigger vérifié via logs uvicorn 'send_email_safe swallow (to=test_xxx@auxora.fr)' à chaque register test; (2) booking client mail idem sur client.test@auxora.fr; (3) password reset one-shot vérifié par 2e tentative → 400; (4) sessions révoquées: GET /api/auth/me avec ancien token → 401; (5) token SHA-256 hashé (64 chars hex) et JAMAIS de champ 'token' en clair dans db.password_reset_tokens."
+}

@@ -26,6 +26,7 @@ from pydantic import BaseModel, Field, validator
 
 from services import security as security_svc
 from services import status_transitions as st
+from services import emails as email_svc
 
 
 def _now_iso() -> str:
@@ -114,6 +115,37 @@ def build_bookings_router(
             actor_role="client", target=booking_id,
             metadata={"artisan_id": data.artisan_id, "date": data.date}, severity="info",
         )
+        # Notifications e-mail (fire-and-forget).
+        try:
+            artisan_user = None
+            if artisan.get("user_id"):
+                artisan_user = await db.users.find_one(
+                    {"user_id": artisan.get("user_id")},
+                    {"_id": 0, "email": 1, "name": 1},
+                )
+            artisan_display = (
+                artisan.get("name")
+                or artisan.get("title")
+                or (artisan_user or {}).get("name")
+                or "l'artisan"
+            )
+            client_email = user.get("email")
+            if client_email:
+                subj, html = email_svc.tpl_booking_client(
+                    user["name"], artisan_display,
+                    data.date, data.slot, booking_id,
+                )
+                await email_svc.send_email_safe(to=client_email, subject=subj, html=html)
+            if artisan_user and artisan_user.get("email"):
+                subj, html = email_svc.tpl_booking_artisan(
+                    artisan_display, user["name"],
+                    data.date, data.slot, booking_id,
+                )
+                await email_svc.send_email_safe(
+                    to=artisan_user["email"], subject=subj, html=html,
+                )
+        except Exception:  # noqa: BLE001 — jamais bloquant.
+            pass
         return booking
 
     @r.get("/bookings/mine")

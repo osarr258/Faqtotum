@@ -27,10 +27,12 @@ Security guarantees added in this iteration:
 """
 from __future__ import annotations
 import asyncio
+import hashlib
 import os
 import re
+import secrets
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional, Tuple
 
 import bcrypt
@@ -41,6 +43,7 @@ from jwt import PyJWKClient
 from pydantic import BaseModel, EmailStr, Field, ValidationError
 
 from services import security as security_svc
+from services import emails as email_svc
 
 
 router = APIRouter()
@@ -76,6 +79,15 @@ class AppleInput(BaseModel):
     # Anti-replay nonce (raw text; Apple sees its SHA-256).
     nonce: Optional[str] = Field(None, max_length=256)
     role: str = "client"
+
+
+class PasswordForgotInput(BaseModel):
+    email: EmailStr
+
+
+class PasswordResetInput(BaseModel):
+    token: str = Field(..., min_length=16, max_length=128)
+    new_password: str = Field(..., min_length=8, max_length=200)
 
 
 # -------------------------------------------------------------
@@ -414,6 +426,9 @@ def build_auth_router(db, get_current_user):
             metadata={"email": user["email"], "method": "email"},
             severity="info", ip=ip,
         )
+        # Welcome email (fire-and-forget, ne bloque jamais la registration).
+        subject, html = email_svc.tpl_welcome(user["name"])
+        await email_svc.send_email_safe(to=user["email"], subject=subject, html=html)
         user.pop("_id", None)
         return {"token": token, "user": {k: v for k, v in user.items() if k != "password"}}
 
@@ -652,6 +667,84 @@ def build_auth_router(db, get_current_user):
                     metadata={"method": sess.get("method", "email")},
                     severity="info",
                 )
+        return {"ok": True}
+
+    # ---------------- Password reset (forgot flow) ----------------
+    @r.post("/auth/password/forgot")
+    async def password_forgot(data: PasswordForgotInput, request: Request):
+        """Envoie un lien de reset si le compte existe. Réponse constante 200
+        pour éviter l'énumération d'emails (timing-safe côté attaquant)."""
+        ip = _client_ip(request)
+        email = data.email.lower()
+        # Rate limit par IP + email pour éviter le spam d'envois.
+        await security_svc.check_login_rate_limit(db, f"pwreset:{email}", ip)
+        user = await db.users.find_one({"email": email})
+        if user and not user.get("deleted") and not user.get("anonymized"):
+            raw = secrets.token_urlsafe(32)
+            token_hash = hashlib.sha256(raw.encode()).hexdigest()
+            expires_at = _now_utc() + timedelta(minutes=60)
+            await db.password_reset_tokens.insert_one({
+                "token_hash": token_hash,
+                "user_id": user["user_id"],
+                "email": email,
+                "created_at": _now_utc().isoformat(),
+                "expires_at": expires_at.isoformat(),
+                "used": False,
+            })
+            reset_link = f"{email_svc.PLATFORM_URL}/reset-password?token={raw}"
+            subject, html = email_svc.tpl_password_reset(
+                user.get("name") or email.split("@")[0], reset_link,
+            )
+            await email_svc.send_email_safe(to=email, subject=subject, html=html)
+            await security_svc.audit_log(
+                db, action="auth.password_reset_requested",
+                actor_id=user["user_id"], actor_role=user.get("role"),
+                target=user["user_id"],
+                metadata={"email": email},
+                severity="info", ip=ip,
+            )
+        # Toujours retourner un 200 générique.
+        return {"ok": True}
+
+    @r.post("/auth/password/reset")
+    async def password_reset(data: PasswordResetInput, request: Request):
+        ip = _client_ip(request)
+        token_hash = hashlib.sha256(data.token.encode()).hexdigest()
+        rec = await db.password_reset_tokens.find_one({"token_hash": token_hash})
+        if not rec or rec.get("used"):
+            raise HTTPException(status_code=400, detail="Lien invalide ou expiré")
+        try:
+            expires = datetime.fromisoformat(rec["expires_at"])
+        except Exception:
+            raise HTTPException(status_code=400, detail="Lien invalide ou expiré")
+        if expires < _now_utc():
+            raise HTTPException(status_code=400, detail="Lien invalide ou expiré")
+        # Marquer le token comme consommé AVANT d'appliquer le changement.
+        result = await db.password_reset_tokens.update_one(
+            {"token_hash": token_hash, "used": False},
+            {"$set": {"used": True, "used_at": _now_utc().isoformat()}},
+        )
+        if result.modified_count == 0:
+            raise HTTPException(status_code=400, detail="Lien déjà utilisé")
+        await db.users.update_one(
+            {"user_id": rec["user_id"]},
+            {"$set": {
+                "password": _hash_password(data.new_password),
+                "password_changed_at": _now_utc().isoformat(),
+            }},
+        )
+        # Révoquer TOUTES les sessions existantes de ce user.
+        await db.user_sessions.update_many(
+            {"user_id": rec["user_id"], "revoked": {"$ne": True}},
+            {"$set": {"revoked": True, "revoked_at": _now_utc().isoformat()}},
+        )
+        await security_svc.audit_log(
+            db, action="auth.password_reset_completed",
+            actor_id=rec["user_id"], actor_role=None,
+            target=rec["user_id"],
+            metadata={"email": rec.get("email")},
+            severity="warn", ip=ip,
+        )
         return {"ok": True}
 
     return r
