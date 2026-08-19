@@ -1,186 +1,560 @@
 /**
- * Faqtotum V2 — AI Home (default tab).
- * ChatGPT-style: 80% of the screen is a conversation, floating input,
- * intelligent suggestions, AI-as-navigation (intent → route).
+ * Faqtotum V1 — Accueil Client (AI-first).
+ *
+ * Le point d'entrée central de l'expérience client. L'IA est le pivot :
+ * une zone héro "Décrivez ce qui vous arrive…" ouvre la conversation
+ * concierge (route existante `/concierge`). Sous le héro :
+ *   - 2 actions rapides (Intervention immédiate / Réserver un créneau)
+ *   - Historique des 3 dernières réservations avec statut
+ *   - Bandeau réassurance (artisans vérifiés)
+ *
+ * Design : monochrome noir/blanc/gris FAQTOTUM. Aucun gradient.
+ * Aucune fonctionnalité mockée — l'appui "Décrivez…" ouvre la vraie
+ * session concierge côté backend.
  */
-import React, { useRef, useState } from "react";
+import { useCallback, useState } from "react";
 import {
-  View, ScrollView, Pressable, KeyboardAvoidingView, Platform, TextInput,
+  View,
+  StyleSheet,
+  ScrollView,
+  Pressable,
+  RefreshControl,
 } from "react-native";
-import { useRouter } from "expo-router";
+import { useFocusEffect, useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
+import * as Haptics from "expo-haptics";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { StatusBar } from "expo-status-bar";
-import { Text, Chip, useTheme, space, radius, palette } from "@/src/design";
-import { hap } from "@/src/design/haptics";
+import { Txt, Avatar } from "@/src/components/ui";
+import FaqtotumLogo from "@/src/components/FaqtotumLogo";
+import { useAuth } from "@/src/context/AuthContext";
+import { api } from "@/src/api";
+import { colors, radius, spacing } from "@/src/theme";
 
-type Msg = { id: string; from: "user" | "ai"; text: string };
+type Booking = {
+  booking_id: string;
+  artisan_name?: string;
+  trade_name?: string;
+  date: string;
+  slot: string;
+  status: string;
+  urgent?: boolean;
+};
 
-/** Basic intent router — the moment the user types something, we detect the
- *  intent and can push them to the right screen. Keep it deterministic and
- *  cheap: a small keyword table wins 90% of the value. */
-const INTENTS: { pattern: RegExp; route: string; hint: string }[] = [
-  { pattern: /facture|invoice|paiement|payer/i, route: "/profile/payment-methods", hint: "Ouvre les paiements" },
-  { pattern: /plombier|fuite|robinet|chauffe-eau/i, route: "/map?trade=plombier", hint: "Cherche un plombier" },
-  { pattern: /électric|electricien|panne|disjonct/i, route: "/map?trade=electricien", hint: "Cherche un électricien" },
-  { pattern: /maison|logement|bien/i, route: "/(client)/home", hint: "Ouvre ma maison" },
-  { pattern: /dépens|budget|conso/i, route: "/(client)/home", hint: "Ouvre le budget" },
-  { pattern: /rappel|entretien|maintenance/i, route: "/(client)/home", hint: "Rappels & entretien" },
-];
+const STATUS_LABEL: Record<string, string> = {
+  pending: "En attente",
+  accepted: "Confirmée",
+  confirmed: "Confirmée",
+  professional_on_the_way: "En route",
+  en_route: "En route",
+  arrived: "Sur place",
+  in_progress: "En cours",
+  awaiting_validation: "À valider",
+  completed: "Terminée",
+  declined: "Refusée",
+  cancelled: "Annulée",
+};
 
-const SUGGESTIONS = [
-  { icon: "water-outline", label: "J'ai une fuite" },
-  { icon: "flash-outline", label: "Panne électrique" },
-  { icon: "thermometer-outline", label: "Chauffage en panne" },
-  { icon: "home-outline", label: "Montrer ma maison" },
-  { icon: "receipt-outline", label: "Mes factures" },
-  { icon: "calendar-outline", label: "Prochains entretiens" },
-] as const;
+const STATUS_STYLE: Record<string, { bg: string; fg: string }> = {
+  pending: { bg: colors.surfaceSecondary, fg: colors.onSurface },
+  accepted: { bg: colors.brand, fg: colors.textInverse },
+  confirmed: { bg: colors.brand, fg: colors.textInverse },
+  en_route: { bg: colors.brand, fg: colors.textInverse },
+  professional_on_the_way: { bg: colors.brand, fg: colors.textInverse },
+  arrived: { bg: colors.brand, fg: colors.textInverse },
+  in_progress: { bg: colors.brand, fg: colors.textInverse },
+  awaiting_validation: { bg: colors.warning, fg: "#442200" },
+  completed: { bg: "#D1FAE5", fg: "#065F46" },
+  declined: { bg: colors.surfaceSecondary, fg: colors.muted },
+  cancelled: { bg: colors.surfaceSecondary, fg: colors.muted },
+};
 
-export default function AiHome() {
-  const t = useTheme();
-  const insets = useSafeAreaInsets();
+export default function ClientHome() {
+  const { user } = useAuth();
   const router = useRouter();
-  const [q, setQ] = useState("");
-  const [msgs, setMsgs] = useState<Msg[]>([]);
-  const scrollRef = useRef<ScrollView>(null);
+  const insets = useSafeAreaInsets();
+  const [bookings, setBookings] = useState<Booking[]>([]);
+  const [refreshing, setRefreshing] = useState(false);
 
-  const send = (text: string) => {
-    if (!text.trim()) return;
-    hap.soft();
-    const userMsg: Msg = { id: `u${Date.now()}`, from: "user", text };
-    setMsgs((m) => [...m, userMsg]);
-    setQ("");
-    // Intent detection — route immediately if we recognize one.
-    const intent = INTENTS.find((i) => i.pattern.test(text));
-    setTimeout(() => {
-      const aiText = intent
-        ? `${intent.hint}… je t'y emmène.`
-        : "Je note. Peux-tu me donner un peu plus de détails ?";
-      setMsgs((m) => [...m, { id: `a${Date.now()}`, from: "ai", text: aiText }]);
-      if (intent) {
-        setTimeout(() => { hap.ok(); router.push(intent.route as any); }, 650);
-      }
-      requestAnimationFrame(() => scrollRef.current?.scrollToEnd({ animated: true }));
-    }, 220);
+  const load = useCallback(async () => {
+    try {
+      const list = await api<Booking[]>("/bookings/mine").catch(() => []);
+      setBookings(list || []);
+    } catch {
+      /* silent */
+    }
+  }, []);
+
+  useFocusEffect(
+    useCallback(() => {
+      load();
+    }, [load]),
+  );
+
+  const onRefresh = async () => {
+    setRefreshing(true);
+    await load();
+    setRefreshing(false);
   };
 
-  const empty = msgs.length === 0;
+  const openConcierge = async (mode: "text" | "urgent" | "schedule" = "text") => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
+    router.push({
+      pathname: "/concierge",
+      params: mode !== "text" ? { mode } : {},
+    });
+  };
+
+  const firstName = (user?.name || "").split(" ")[0] || "";
+  const hour = new Date().getHours();
+  const greeting =
+    hour < 6
+      ? "Bonne nuit"
+      : hour < 12
+        ? "Bonjour"
+        : hour < 18
+          ? "Bon après-midi"
+          : "Bonsoir";
+
+  const recent = bookings
+    .filter((b) => b.status !== "cancelled")
+    .slice(0, 3);
 
   return (
-    <View style={{ flex: 1, backgroundColor: t.bg }}>
-      <StatusBar style={t.scheme === "dark" ? "light" : "dark"} />
-
-      {/* Header */}
-      <View style={{ paddingTop: insets.top + space.md, paddingHorizontal: space.xl, paddingBottom: space.sm, flexDirection: "row", alignItems: "center", justifyContent: "space-between" }}>
-        <View>
-          <Text variant="caption" tone="fgMuted" style={{ letterSpacing: 4 }}>FAQTOTUM</Text>
-          <Text variant="h2" style={{ marginTop: 2 }}>Bonjour</Text>
+    <View style={styles.root}>
+      <ScrollView
+        contentContainerStyle={{
+          paddingTop: insets.top + spacing.md,
+          paddingBottom: insets.bottom + 100,
+        }}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={onRefresh}
+            tintColor={colors.brand}
+          />
+        }
+      >
+        {/* --- Header ------------------------------------------------ */}
+        <View style={styles.header}>
+          <View style={styles.logoRow}>
+            <FaqtotumLogo size={22} color={colors.brand} />
+            <Txt
+              weight="bold"
+              size="sm"
+              style={{ marginLeft: 8, letterSpacing: 0.5 }}
+            >
+              faqtotum
+            </Txt>
+          </View>
+          <View style={styles.headerRow}>
+            <View style={{ flex: 1 }}>
+              <Txt size="sm" color={colors.muted}>
+                {greeting},
+              </Txt>
+              <Txt weight="extrabold" size="3xl" style={{ marginTop: 2 }}>
+                {firstName || "Client"}
+              </Txt>
+            </View>
+            <Pressable
+              testID="header-avatar"
+              onPress={() => router.push("/(client)/profile")}
+              hitSlop={10}
+            >
+              <Avatar name={user?.name} size={44} />
+            </Pressable>
+          </View>
         </View>
-        <Pressable onPress={() => { hap.tap(); router.push("/(client)/profile"); }} hitSlop={8}>
-          <View style={{ width: 40, height: 40, borderRadius: 20, backgroundColor: t.bgAlt, alignItems: "center", justifyContent: "center", borderWidth: 1, borderColor: t.border }}>
-            <Ionicons name="person-outline" size={18} color={t.fg} />
+
+        {/* --- HERO IA — le vrai point d'entrée -------------------- */}
+        <Pressable
+          testID="hero-ai-input"
+          onPress={() => openConcierge("text")}
+          style={({ pressed }) => [
+            styles.aiHero,
+            pressed && { opacity: 0.92 },
+          ]}
+        >
+          <View style={styles.aiTitleRow}>
+            <View style={styles.aiSparkle}>
+              <Ionicons name="sparkles" size={16} color={colors.textInverse} />
+            </View>
+            <Txt weight="extrabold" size="lg" color={colors.textInverse}>
+              Que puis-je faire pour vous ?
+            </Txt>
+          </View>
+          <Txt
+            size="base"
+            color="#CFCFCF"
+            style={{ marginTop: 6, lineHeight: 22 }}
+          >
+            {'"Ma chaudière ne fonctionne plus depuis ce matin."'}
+          </Txt>
+          <Txt
+            size="sm"
+            color="#8A8A8A"
+            style={{ marginTop: spacing.md, lineHeight: 20 }}
+          >
+            Décrivez librement votre problème. L&apos;IA vous propose l&apos;artisan
+            adapté en quelques secondes.
+          </Txt>
+          <View style={styles.aiFooter}>
+            <View style={styles.aiChip}>
+              <Ionicons
+                name="mic-outline"
+                size={14}
+                color={colors.textInverse}
+              />
+              <Txt
+                size="sm"
+                color={colors.textInverse}
+                style={{ marginLeft: 6 }}
+              >
+                Voix
+              </Txt>
+            </View>
+            <View style={styles.aiChip}>
+              <Ionicons
+                name="camera-outline"
+                size={14}
+                color={colors.textInverse}
+              />
+              <Txt
+                size="sm"
+                color={colors.textInverse}
+                style={{ marginLeft: 6 }}
+              >
+                Photo
+              </Txt>
+            </View>
+            <View style={{ flex: 1 }} />
+            <View style={styles.aiStart}>
+              <Txt
+                weight="bold"
+                size="sm"
+                color={colors.brand}
+                style={{ marginRight: 6 }}
+              >
+                Commencer
+              </Txt>
+              <Ionicons name="arrow-forward" size={16} color={colors.brand} />
+            </View>
           </View>
         </Pressable>
-      </View>
 
-      {/* Conversation — or hero prompt when empty */}
-      <ScrollView
-        ref={scrollRef}
-        style={{ flex: 1 }}
-        contentContainerStyle={{ padding: space.xl, paddingBottom: 200 }}
-        showsVerticalScrollIndicator={false}
-      >
-        {empty ? (
-          <View style={{ marginTop: space.huge }}>
-            <Text variant="display" style={{ letterSpacing: -2 }}>Que puis‑je faire</Text>
-            <Text variant="display" tone="fgMuted" style={{ letterSpacing: -2 }}>pour votre maison ?</Text>
-            <Text variant="body" tone="fgMuted" style={{ marginTop: space.lg, maxWidth: 320 }}>
-              Décrivez un souci, parlez, ou envoyez une photo. Faqtotum comprend et agit.
-            </Text>
-          </View>
-        ) : (
-          <View style={{ gap: space.md }}>
-            {msgs.map((m) => (
-              <View
-                key={m.id}
-                style={{
-                  alignSelf: m.from === "user" ? "flex-end" : "flex-start",
-                  maxWidth: "85%",
-                  backgroundColor: m.from === "user" ? t.fg : t.bgAlt,
-                  paddingHorizontal: space.lg,
-                  paddingVertical: space.md,
-                  borderRadius: radius.lg,
-                  borderBottomRightRadius: m.from === "user" ? radius.sm : radius.lg,
-                  borderBottomLeftRadius: m.from === "ai" ? radius.sm : radius.lg,
-                  borderWidth: m.from === "ai" ? 1 : 0,
-                  borderColor: t.border,
-                }}
+        {/* --- Quick actions ---------------------------------------- */}
+        <View style={styles.quickRow}>
+          <Pressable
+            testID="quick-urgent"
+            onPress={() => openConcierge("urgent")}
+            style={({ pressed }) => [
+              styles.quickCard,
+              styles.quickUrgent,
+              pressed && { opacity: 0.92 },
+            ]}
+          >
+            <View style={styles.quickIconUrgent}>
+              <Ionicons name="flash" size={22} color={colors.textInverse} />
+            </View>
+            <Txt weight="extrabold" size="base" style={{ marginTop: spacing.md }}>
+              Intervention immédiate
+            </Txt>
+            <Txt
+              size="sm"
+              color={colors.muted}
+              style={{ marginTop: 4, lineHeight: 18 }}
+            >
+              Trouver un artisan disponible maintenant
+            </Txt>
+          </Pressable>
+          <Pressable
+            testID="quick-schedule"
+            onPress={() => openConcierge("schedule")}
+            style={({ pressed }) => [
+              styles.quickCard,
+              pressed && { opacity: 0.92 },
+            ]}
+          >
+            <View style={styles.quickIcon}>
+              <Ionicons name="calendar" size={20} color={colors.textInverse} />
+            </View>
+            <Txt weight="extrabold" size="base" style={{ marginTop: spacing.md }}>
+              Réserver un créneau
+            </Txt>
+            <Txt
+              size="sm"
+              color={colors.muted}
+              style={{ marginTop: 4, lineHeight: 18 }}
+            >
+              Planifier une intervention à date choisie
+            </Txt>
+          </Pressable>
+        </View>
+
+        {/* --- Recent bookings -------------------------------------- */}
+        {recent.length > 0 && (
+          <View style={styles.section}>
+            <View style={styles.sectionHead}>
+              <Txt weight="bold" size="lg">
+                Mes demandes récentes
+              </Txt>
+              <Pressable
+                testID="see-all-bookings"
+                onPress={() => router.push("/(client)/bookings")}
+                hitSlop={10}
               >
-                <Text style={{ color: m.from === "user" ? t.bg : t.fg }}>{m.text}</Text>
-              </View>
+                <Txt weight="bold" size="sm" color={colors.brand}>
+                  Voir tout
+                </Txt>
+              </Pressable>
+            </View>
+            {recent.map((b) => (
+              <Pressable
+                key={b.booking_id}
+                testID={`recent-${b.booking_id}`}
+                onPress={() =>
+                  router.push({
+                    pathname: "/track/[id]",
+                    params: { id: b.booking_id },
+                  })
+                }
+                style={({ pressed }) => [
+                  styles.bkCard,
+                  b.urgent && { borderColor: colors.error, borderWidth: 1.5 },
+                  pressed && { opacity: 0.9 },
+                ]}
+              >
+                <View style={styles.bkIcon}>
+                  <Ionicons
+                    name="briefcase-outline"
+                    size={18}
+                    color={colors.onSurface}
+                  />
+                </View>
+                <View style={{ flex: 1, marginLeft: spacing.md }}>
+                  <View
+                    style={{
+                      flexDirection: "row",
+                      alignItems: "center",
+                      gap: 6,
+                    }}
+                  >
+                    <Txt weight="bold">
+                      {b.artisan_name || "Artisan"}
+                    </Txt>
+                    {b.urgent ? (
+                      <View style={styles.urgentTag}>
+                        <Txt
+                          weight="extrabold"
+                          size="sm"
+                          color={colors.textInverse}
+                          style={{ letterSpacing: 1 }}
+                        >
+                          URGENT
+                        </Txt>
+                      </View>
+                    ) : null}
+                  </View>
+                  <Txt size="sm" color={colors.muted} style={{ marginTop: 2 }}>
+                    {b.date} · {b.slot}
+                  </Txt>
+                </View>
+                <View
+                  style={[
+                    styles.statusPill,
+                    {
+                      backgroundColor:
+                        STATUS_STYLE[b.status]?.bg || colors.surfaceSecondary,
+                    },
+                  ]}
+                >
+                  <Txt
+                    weight="bold"
+                    size="sm"
+                    color={STATUS_STYLE[b.status]?.fg || colors.onSurface}
+                  >
+                    {STATUS_LABEL[b.status] || b.status}
+                  </Txt>
+                </View>
+              </Pressable>
             ))}
           </View>
         )}
+
+        {/* --- Reassurance ------------------------------------------ */}
+        <View style={styles.trustBox}>
+          <View style={styles.trustIcon}>
+            <Ionicons
+              name="shield-checkmark"
+              size={22}
+              color={colors.textInverse}
+            />
+          </View>
+          <View style={{ flex: 1, marginLeft: spacing.md }}>
+            <Txt weight="bold" size="sm">
+              Artisans vérifiés
+            </Txt>
+            <Txt
+              size="sm"
+              color={colors.muted}
+              style={{ marginTop: 2, lineHeight: 18 }}
+            >
+              Identité, assurance, SIRET contrôlés. Paiement sécurisé Stripe.
+            </Txt>
+          </View>
+        </View>
       </ScrollView>
-
-      {/* Suggestion chips */}
-      {empty && (
-        <View style={{ position: "absolute", left: 0, right: 0, bottom: insets.bottom + 140 }}>
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ paddingHorizontal: space.xl, gap: space.sm }}>
-            {SUGGESTIONS.map((s) => (
-              <Chip key={s.label} label={s.label} icon={s.icon as any} onPress={() => send(s.label)} />
-            ))}
-          </ScrollView>
-        </View>
-      )}
-
-      {/* Floating input bar */}
-      <KeyboardAvoidingView
-        behavior={Platform.OS === "ios" ? "padding" : undefined}
-        keyboardVerticalOffset={0}
-        style={{ position: "absolute", left: 0, right: 0, bottom: insets.bottom + 72 }}
-      >
-        <View style={{
-          marginHorizontal: space.xl,
-          backgroundColor: t.bgElevated,
-          borderRadius: 28,
-          borderWidth: 1,
-          borderColor: t.border,
-          paddingHorizontal: space.md,
-          paddingVertical: space.sm,
-          flexDirection: "row",
-          alignItems: "center",
-          gap: space.sm,
-          shadowColor: palette.ink, shadowOpacity: 0.10, shadowRadius: 24, shadowOffset: { width: 0, height: 12 }, elevation: 8,
-        }}>
-          <Pressable onPress={() => hap.tap()} hitSlop={8} style={{ width: 36, height: 36, alignItems: "center", justifyContent: "center", borderRadius: 999 }}>
-            <Ionicons name="add" size={22} color={t.fg} />
-          </Pressable>
-          <TextInput
-            placeholder="Demandez à Faqtotum…"
-            placeholderTextColor={t.fgSubtle}
-            value={q}
-            onChangeText={setQ}
-            onSubmitEditing={() => send(q)}
-            returnKeyType="send"
-            style={{
-              flex: 1, color: t.fg,
-              fontSize: 16, fontFamily: "Jakarta500",
-              paddingVertical: Platform.OS === "ios" ? 10 : 6,
-            }}
-          />
-          {q.trim().length > 0 ? (
-            <Pressable onPress={() => send(q)} hitSlop={8} style={{ width: 40, height: 40, alignItems: "center", justifyContent: "center", borderRadius: 999, backgroundColor: t.fg }}>
-              <Ionicons name="arrow-up" size={20} color={t.bg} />
-            </Pressable>
-          ) : (
-            <Pressable onPress={() => hap.firm()} hitSlop={8} style={{ width: 40, height: 40, alignItems: "center", justifyContent: "center", borderRadius: 999, backgroundColor: t.fg }}>
-              <Ionicons name="mic" size={20} color={t.bg} />
-            </Pressable>
-          )}
-        </View>
-      </KeyboardAvoidingView>
     </View>
   );
 }
+
+const styles = StyleSheet.create({
+  root: {
+    flex: 1,
+    backgroundColor: colors.surface,
+  },
+  header: {
+    paddingHorizontal: spacing.lg,
+    marginBottom: spacing.lg,
+  },
+  logoRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginBottom: spacing.lg,
+  },
+  headerRow: {
+    flexDirection: "row",
+    alignItems: "center",
+  },
+  aiHero: {
+    marginHorizontal: spacing.lg,
+    marginBottom: spacing.lg,
+    padding: spacing.xl,
+    borderRadius: radius.lg,
+    backgroundColor: "#111111",
+  },
+  aiTitleRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.sm,
+  },
+  aiSparkle: {
+    width: 26,
+    height: 26,
+    borderRadius: 13,
+    backgroundColor: "rgba(255,255,255,0.15)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  aiFooter: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginTop: spacing.lg,
+    gap: spacing.sm,
+  },
+  aiChip: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: radius.pill,
+    backgroundColor: "rgba(255,255,255,0.10)",
+  },
+  aiStart: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: radius.pill,
+    backgroundColor: colors.textInverse,
+  },
+  quickRow: {
+    flexDirection: "row",
+    gap: spacing.md,
+    paddingHorizontal: spacing.lg,
+    marginBottom: spacing["2xl"],
+  },
+  quickCard: {
+    flex: 1,
+    padding: spacing.lg,
+    borderRadius: radius.lg,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.surface,
+  },
+  quickUrgent: {
+    borderColor: colors.error,
+    borderWidth: 1.5,
+  },
+  quickIcon: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: colors.brand,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  quickIconUrgent: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: colors.error,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  section: {
+    paddingHorizontal: spacing.lg,
+    marginBottom: spacing["2xl"],
+  },
+  sectionHead: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginBottom: spacing.md,
+  },
+  bkCard: {
+    flexDirection: "row",
+    alignItems: "center",
+    padding: spacing.md,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: colors.border,
+    marginBottom: spacing.sm,
+    backgroundColor: colors.surface,
+  },
+  bkIcon: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: colors.surfaceSecondary,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  statusPill: {
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: radius.pill,
+    marginLeft: spacing.sm,
+  },
+  urgentTag: {
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: radius.sm,
+    backgroundColor: colors.error,
+  },
+  trustBox: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginHorizontal: spacing.lg,
+    padding: spacing.md,
+    borderRadius: radius.md,
+    backgroundColor: colors.surfaceSecondary,
+  },
+  trustIcon: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: colors.brand,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+});
