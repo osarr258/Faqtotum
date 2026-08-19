@@ -42,6 +42,7 @@ export default function ArtisanDetail() {
   const [date, setDate] = useState(days[0].iso);
   const [slot, setSlot] = useState("");
   const [desc, setDesc] = useState("");
+  const [urgent, setUrgent] = useState(false);
   const [showSheet, setShowSheet] = useState(false);
   const [booking, setBooking] = useState(false);
   const [success, setSuccess] = useState(false);
@@ -62,7 +63,7 @@ export default function ArtisanDetail() {
     setBooking(true);
     setError("");
     try {
-      await api("/bookings", { method: "POST", body: { artisan_id: id, date, slot, description: desc } });
+      await api("/bookings", { method: "POST", body: { artisan_id: id, date, slot, description: desc, urgent } });
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
       setShowSheet(false);
       setSuccess(true);
@@ -186,6 +187,36 @@ export default function ArtisanDetail() {
             multiline
             style={styles.descInput}
           />
+          <Pressable
+            testID="toggle-urgent"
+            onPress={() => {
+              Haptics.selectionAsync().catch(() => {});
+              setUrgent((u) => !u);
+            }}
+            style={[
+              styles.urgentToggle,
+              urgent && { borderColor: colors.error, backgroundColor: "#FEE2E2" },
+            ]}
+          >
+            <View
+              style={[
+                styles.urgentCheck,
+                urgent && { backgroundColor: colors.error, borderColor: colors.error },
+              ]}
+            >
+              {urgent ? (
+                <Ionicons name="checkmark" size={12} color={colors.textInverse} />
+              ) : null}
+            </View>
+            <View style={{ flex: 1, marginLeft: spacing.md }}>
+              <Txt weight="bold" size="sm">
+                Marquer comme URGENT
+              </Txt>
+              <Txt size="sm" color={colors.muted} style={{ marginTop: 2 }}>
+                Notification prioritaire pour l&apos;artisan
+              </Txt>
+            </View>
+          </Pressable>
           {error ? <Txt color={colors.error} size="sm" style={{ marginBottom: spacing.sm }}>{error}</Txt> : null}
           <Button testID="confirm-booking-button" title="Confirmer" loading={booking} onPress={confirm} />
         </View>
@@ -236,6 +267,8 @@ const styles = StyleSheet.create({
   handle: { alignSelf: "center", width: 40, height: 4, borderRadius: 2, backgroundColor: colors.border, marginBottom: spacing.lg },
   summaryRow: { flexDirection: "row", justifyContent: "space-between", paddingVertical: spacing.sm, borderBottomWidth: 1, borderBottomColor: colors.divider },
   descInput: { backgroundColor: colors.surfaceSecondary, borderRadius: radius.md, padding: spacing.md, minHeight: 70, fontFamily: font.medium, fontSize: fontSize.base, color: colors.onSurface, marginVertical: spacing.lg, textAlignVertical: "top" },
+  urgentToggle: { flexDirection: "row", alignItems: "center", borderWidth: 1.5, borderColor: colors.border, borderRadius: radius.md, padding: spacing.md, marginBottom: spacing.lg },
+  urgentCheck: { width: 22, height: 22, borderRadius: 4, borderWidth: 2, borderColor: colors.borderStrong, alignItems: "center", justifyContent: "center" },
   successBg: { flex: 1, backgroundColor: "rgba(0,0,0,0.5)", alignItems: "center", justifyContent: "center", padding: spacing.xl },
   successCard: { backgroundColor: colors.surface, borderRadius: radius.lg, padding: spacing.xl, alignItems: "center", width: "100%" },
   successIcon: { width: 72, height: 72, borderRadius: 36, backgroundColor: colors.success, alignItems: "center", justifyContent: "center" },

@@ -10,6 +10,17 @@ The raw score is NEVER exposed to the customer; the UI only shows
 
 Design goals: deterministic, side-effect free, easily unit-tested, and scalable
 (O(n) over the candidate pool). All weights live in WEIGHTS and are documented.
+
+FAQTOTUM V1 additions
+---------------------
+* **Cold-start boost** : un nouvel artisan (jobs_done < 3) sans signaux négatifs
+  reçoit un boost de +12 sur son score raw, pour l'aider à décrocher sa
+  première mission. Le boost s'annule dès qu'il y a des signalements, litiges
+  ou un taux de refus élevé.
+* **Pénalités FAQTOTUM** : retards, signalements et litiges déduisent
+  proportionnellement du score (déterministe).
+* La fonction ``score`` retourne toujours la même signature — les tests
+  existants ne sont pas cassés.
 """
 from __future__ import annotations
 import math
@@ -78,8 +89,45 @@ def score(a: Dict[str, Any], ctx: Dict[str, Any]) -> Tuple[float, Dict[str, floa
 
     total_w = sum(weights.values())
     raw = sum(sub[k] * weights[k] for k in sub) / total_w * 100.0
-    # Cancellation penalty (if tracked).
-    raw -= (a.get("cancellation_rate", 0) or 0) * 0.3
+
+    # -----------------------------------------------------------------
+    # FAQTOTUM V1 — Pénalités déterministes (retards, signalements, litiges,
+    # taux de refus, taux d'annulation). Chaque signal négatif diminue le
+    # score raw de façon bornée. Aucune pénalité si le champ est absent.
+    # -----------------------------------------------------------------
+    cancel_rate = float(a.get("cancellation_rate", 0) or 0)  # %
+    refusal_rate = float(a.get("refusal_rate", 0) or 0)      # %
+    late_rate = float(a.get("late_rate", 0) or 0)            # %
+    reports_count = int(a.get("reports_count", 0) or 0)      # nb
+    disputes_count = int(a.get("disputes_count", 0) or 0)    # nb
+
+    raw -= cancel_rate * 0.30       # -30 % du % d'annulation
+    raw -= refusal_rate * 0.20      # -20 % du % de refus
+    raw -= late_rate * 0.25         # -25 % du % de retard
+    raw -= min(reports_count, 10) * 1.5   # -1.5 / signalement (cap 10)
+    raw -= min(disputes_count, 5) * 3.0   # -3 / litige (cap 5)
+
+    # -----------------------------------------------------------------
+    # FAQTOTUM V1 — Cold-start boost
+    # Un artisan tout neuf (jobs_done < 3) sans aucun signal négatif reçoit
+    # un boost de visibilité de +12 pour décrocher sa première mission.
+    # Dès qu'il y a des signalements, litiges ou taux de refus > 20 %,
+    # le boost est annulé (il n'est pas dû à une manœuvre).
+    # -----------------------------------------------------------------
+    jobs_done = int(a.get("jobs_done", 0) or 0)
+    is_newcomer = (
+        jobs_done < 3
+        and reports_count == 0
+        and disputes_count == 0
+        and refusal_rate <= 20.0
+        and cancel_rate <= 10.0
+    )
+    if is_newcomer:
+        raw += 12.0
+        sub["newcomer_boost"] = 1.0
+    else:
+        sub["newcomer_boost"] = 0.0
+
     return round(_clamp(raw, 0, 100), 1), sub, d
 
 
@@ -107,6 +155,8 @@ def explain(card: Dict[str, Any], eta_minutes: int | None = None) -> List[str]:
 
     if eta_minutes is not None:
         reasons.append(f"Disponible dans ~{eta_minutes} min")
+    if bd.get("newcomer_boost", 0) >= 1.0:
+        reasons.append("Nouveau sur Faqtotum — à découvrir")
     if card.get("rating"):
         reasons.append(f"Note {card['rating']:.1f}★ ({card.get('reviews_count', 0)} avis)")
     if bd.get("distance", 0) >= 0.7 and card.get("distance_km") is not None:

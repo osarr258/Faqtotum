@@ -43,6 +43,10 @@ class BookingInput(BaseModel):
     # Accept either `HH:MM` (Sprint 14) or legacy range `HH:MM-HH:MM` for backward compat.
     slot: str = Field(..., pattern=r"^([01]\d|2[0-3]):[0-5]\d(?:-([01]\d|2[0-3]):[0-5]\d)?$")
     description: str = Field("", max_length=2000)
+    # FAQTOTUM V1 — Urgence : si `True`, la demande est marquée prioritaire
+    # et remontera dans la zone URGENT de l'espace artisan. Non bloquant
+    # côté state machine (le workflow reste identique).
+    urgent: bool = Field(False)
 
     @validator("description")
     def _no_html(cls, v: str) -> str:  # noqa: N805
@@ -91,6 +95,7 @@ def build_bookings_router(
             "date": data.date,
             "slot": data.slot,
             "description": data.description,
+            "urgent": bool(data.urgent),
             "status": "pending",
             "simulated": True,
             "created_at": _now_iso(),
@@ -105,7 +110,7 @@ def build_bookings_router(
             "artisan_id": data.artisan_id,
             "artisan_name": artisan.get("name") or artisan.get("title"),
             "trade_name": artisan.get("trade_name"),
-            "last_message": "Réservation créée",
+            "last_message": "Demande URGENTE reçue" if data.urgent else "Réservation créée",
             "last_at": _now_iso(),
             "created_at": _now_iso(),
         })
@@ -113,7 +118,12 @@ def build_bookings_router(
         await security_svc.audit_log(
             db, action="booking.created", actor_id=user["user_id"],
             actor_role="client", target=booking_id,
-            metadata={"artisan_id": data.artisan_id, "date": data.date}, severity="info",
+            metadata={
+                "artisan_id": data.artisan_id,
+                "date": data.date,
+                "urgent": bool(data.urgent),
+            },
+            severity="info",
         )
         # Notifications e-mail (fire-and-forget).
         try:
