@@ -28,6 +28,7 @@ from routes.security import build_security_router
 from routes.users import build_users_router
 from routes.artisans import build_artisans_router
 from routes.bookings import build_bookings_router
+from routes.broadcasts import build_broadcasts_router
 from routes.missions import build_missions_router
 from routes.interventions import build_interventions_router
 
@@ -1086,6 +1087,12 @@ _modular_interventions = build_interventions_router(db, _get_current_user)
 app.include_router(_modular_bookings, prefix="/api")
 app.include_router(_modular_missions, prefix="/api")
 app.include_router(_modular_interventions, prefix="/api")
+
+# FAQTOTUM V1 — Broadcast multi-artisans (accept-first-wins)
+_modular_broadcasts = build_broadcasts_router(
+    db=db, get_current_user=get_current_user, enrich_artisan=enrich_artisan,
+)
+app.include_router(_modular_broadcasts, prefix="/api")
 
 # ------------------------------------------------------------
 # V1 migration (Option B) — mount the 6 partition modules.

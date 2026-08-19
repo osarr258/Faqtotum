@@ -30,6 +30,8 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Txt, Avatar } from "@/src/components/ui";
 import FaqtotumLogo from "@/src/components/FaqtotumLogo";
 import RequestCard, { RequestData } from "@/src/components/RequestCard";
+import UrgentBanner from "@/src/components/UrgentBanner";
+import { useUrgentAlert } from "@/src/hooks/useUrgentAlert";
 import { useAuth } from "@/src/context/AuthContext";
 import { api } from "@/src/api";
 import { colors, radius, spacing } from "@/src/theme";
@@ -64,6 +66,9 @@ export default function ArtisanHub() {
   const [profile, setProfile] = useState<ArtisanProfile | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [loading, setLoading] = useState(true);
+  const { alert: urgentAlert, dismiss: dismissAlert } = useUrgentAlert({
+    intervalMs: 8000,
+  });
 
   const load = useCallback(async () => {
     try {
@@ -141,6 +146,19 @@ export default function ArtisanHub() {
 
   return (
     <View style={styles.root}>
+      <UrgentBanner
+        visible={!!urgentAlert}
+        onPress={() => {
+          if (urgentAlert) {
+            router.push({
+              pathname: "/track/[id]",
+              params: { id: urgentAlert.bookingId },
+            });
+            dismissAlert();
+          }
+        }}
+        onDismiss={dismissAlert}
+      />
       <ScrollView
         contentContainerStyle={{
           paddingTop: insets.top + spacing.md,
