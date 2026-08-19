@@ -1099,6 +1099,13 @@ app.include_router(_modular_broadcasts, prefix="/api")
 _modular_estimation = build_estimation_router(get_current_user=get_current_user)
 app.include_router(_modular_estimation, prefix="/api")
 
+# FAQTOTUM V1 — Tracking unifié pour bookings (carte + statut + artisan)
+from routes.tracking import build_tracking_router  # noqa: E402
+_modular_tracking = build_tracking_router(
+    db=db, get_current_user=get_current_user,
+)
+app.include_router(_modular_tracking, prefix="/api")
+
 # ------------------------------------------------------------
 # V1 migration (Option B) — mount the 6 partition modules.
 # Each module receives every db handle / helper / Pydantic model / service
