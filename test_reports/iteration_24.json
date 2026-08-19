@@ -1,0 +1,62 @@
+{
+  "summary": "Retest Sprint 1 brique 1 after MOCK residue fix. **Original critical bug closed**: GET /api/connect/status for pro.test@auxora.fr now returns 200 {connected:false} instead of 500 — DB scrub removed the stale acct_mock_ row (0 acct_mock_ left in db.stripe_accounts). All 10 HTTP smoke tests pass (test_sprint1_stripe_live_smoke.py). Full pytest suite: **290 passed / 19 skipped / 0 failed** in 104s — matches Sprint 1 baseline. DB state validated: 0 acct_mock rows, 587 pi_mock payments now flagged legacy_mock=true. Defensive short-circuits in retrieve_account/create_transfer/refund_payment via _is_mock_id() confirmed in code; retrieve_account also catches PermissionError and InvalidRequestError. **HOWEVER**: while re-executing the review's onboard requirement (POST /api/connect/onboard with pro.test@auxora.fr must return 200), a NEW 500 was reproduced — Stripe now REFUSES stripe.Account.create(type='express') on the current test account with 400 InvalidRequestError: 'Stripe no longer recommends Accounts v1 for new Connect integrations. Create connected accounts with POST /v2/core/accounts instead… If your integration requires v1 account creation, enable Accounts v1 support in the Dashboard: https://dashboard.stripe.com/settings/features/feat_accounts_v1_support'. services/payments.py:212 has no try/except → 500. This blocks the 'reconnect' happy-path called out in the review. Not a regression of the mock-cleanup fix, but a Stripe-side API deprecation that surfaces now that live-mode calls actually reach Stripe.",
+  "backend_issues": {
+    "critical": [
+      {
+        "endpoint": "POST /api/connect/onboard",
+        "issue": "Returns 500. RCA: services/payments.py:212 calls stripe.Account.create(type='express', ...) which Stripe now refuses with 400 InvalidRequestError (Accounts v1 deprecated for new Connect integrations on this test account). The wrapper has no try/except → the raw stripe._error.InvalidRequestError bubbles to FastAPI. Reproduced with `curl -X POST https://reviens-app.preview.emergentagent.com/api/connect/onboard -H 'Authorization: Bearer <pro.test token>' -d '{}'` → HTTP 500. Stripe response body: 'Stripe no longer recommends Accounts v1 for new Connect integrations. Create connected accounts with POST /v2/core/accounts instead… If your integration requires v1 account creation for a supported compatibility scenario, enable Accounts v1 support in the Dashboard: https://dashboard.stripe.com/settings/features/feat_accounts_v1_support'. Fix options: (a) enable the 'Accounts v1 support' toggle in Stripe Dashboard (fastest); (b) migrate create_connect_account to POST /v2/core/accounts (Accounts v2); (c) minimally wrap the call in try/except stripe.error.InvalidRequestError → 502 Bad Gateway with a user-facing 'Stripe onboarding unavailable, contact support' message so the endpoint never 500s.",
+        "priority": "CRITICAL"
+      }
+    ],
+    "minor": [
+      {
+        "endpoint": "services/payments.py — Stripe wrappers (create_connect_account, create_account_link, create_payment_intent, create_subscription, get_or_create_customer)",
+        "issue": "None of the remaining wrappers have a try/except around the live Stripe call. Only retrieve_account, create_transfer and refund_payment were hardened in this iteration. Any transient Stripe issue (rate-limit, deleted resource, API change) on the other wrappers will still surface as 500. Recommend a small decorator that maps stripe._error.* to 502 for wrapper-external callers, while preserving the boot-time fail-fast strictness."
+      }
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_sprint1_stripe_live_smoke.py",
+    "/app/backend/tests/test_stripe_boot_validation.py",
+    "/app/test_reports/pytest/iter24_full.xml"
+  ],
+  "action_items": [
+    "Fix /api/connect/onboard 500: either enable 'Accounts v1 support' in the Stripe Dashboard for the test account (https://dashboard.stripe.com/settings/features/feat_accounts_v1_support), or migrate services/payments.py::create_connect_account to POST /v2/core/accounts (Accounts v2). Regardless, wrap the call in try/except stripe.error.InvalidRequestError to prevent raw 500s reaching the client.",
+    "Optional hardening: wrap the remaining live Stripe wrappers (create_account_link, create_payment_intent, create_subscription, get_or_create_customer) with the same defensive pattern already applied to retrieve_account/create_transfer/refund_payment, or introduce a small `@stripe_safe` decorator."
+  ],
+  "critical_code_review_comments": [
+    "services/payments.py:212 create_connect_account has no try/except — a single Stripe API deprecation on the create call takes down /api/connect/onboard for every artisan. Same pattern as the previous /api/connect/status bug, just a different verb.",
+    "services/payments.py:220-232 create_account_link is also unguarded — if Stripe rejects the account_id (e.g. after our fallback), the endpoint 500s again. Consider chaining: if create_connect_account fails or returns needs_reonboarding, connect_onboard should short-circuit before hitting create_account_link.",
+    "routes/payments.py:52-63 writes the freshly created stripe_account_id to db.stripe_accounts BEFORE payments.create_account_link succeeds. If create_account_link then throws, the DB is inconsistent (row present, but no onboarding URL returned to the client). Wrap in a transaction or move the insert after link creation."
+  ],
+  "updated_files": [],
+  "success_rate": {
+    "backend": "100% on the closed bug: connect/status no longer 500s (target of iteration_23). 96.7% overall on Sprint 1 smoke: 9/10 HTTP scenarios green + full pytest 290/290 non-skipped green; only /api/connect/onboard (explicit review item #3) still 500s due to Stripe Accounts v1 deprecation — not a regression of the mock fix but blocks the onboard happy-path.",
+    "frontend": "N/A — backend-only review"
+  },
+  "seed_data_creation": "None. DB scrub confirmed: 0 acct_mock_ rows in stripe_accounts, 587 pi_mock_ payments marked legacy_mock=true (matches the main-agent-reported scrub numbers).",
+  "retest_needed": true,
+  "should_main_agent_self_test": false,
+  "per_run_results": {
+    "pytest_full_suite": "290 passed, 19 skipped, 0 failed, 2 warnings in 104.57s",
+    "smoke_tests_sprint1": "10 passed / 0 failed in 4.43s (all 10 including test_connect_status_artisan_no_500)",
+    "manual_curl_connect_status_pro_test": "HTTP 200 {\"connected\":false}",
+    "manual_curl_connect_onboard_pro_test": "HTTP 500 (Stripe Accounts v1 rejected — see critical bug)"
+  },
+  "coverage_of_review_requirements": {
+    "connect_status_no_500_stale_mock_id": "PASS — original bug closed, returns 200 {connected:false} after DB scrub",
+    "connect_status_no_500_no_stripe_account": "PASS — returns 200 {connected:false}",
+    "connect_onboard_returns_200": "FAIL — returns 500 due to Stripe Accounts v1 deprecation (see critical)",
+    "payments_endpoints_no_500_on_legacy_pi_mock": "PASS — 587 pi_mock payments flagged legacy_mock; create_transfer/refund_payment short-circuit via _is_mock_id; no 500 observed on /api/payments/create-intent, /api/escrows/mine, /api/interventions/*/payment-summary",
+    "full_suite_290_19_0": "PASS — 290 passed / 19 skipped / 0 failed",
+    "smoke_tests_from_prev_iteration": "PASS — 10/10 (root Faqtotum API, email login client+artisan, apple 401, google 4xx, connect/status client+artisan, create-intent, escrows/mine, payment-summary)"
+  },
+  "context_for_next_testing_agent": "Original iteration_23 blocker (500 on /api/connect/status for pro.test@auxora.fr) is CLOSED — the DB scrub + _is_mock_id() short-circuits work end-to-end. Full backend suite is at 290/19/0. **Remaining blocker for review sign-off**: /api/connect/onboard 500 because Stripe test API refuses Accounts v1 creation on this platform. Main agent must (a) enable Accounts v1 support in Stripe Dashboard OR (b) migrate to POST /v2/core/accounts OR (c) at minimum add try/except around stripe.Account.create in services/payments.py:212. After fix, re-run smoke_tests + `curl -X POST /api/connect/onboard` with pro.test@auxora.fr to confirm 200 with onboarding_url. Everything else (retrieve_account, create_transfer, refund_payment, DB scrub) is validated and stable.",
+  "rca_of_issue": "Reproduction of the NEW /api/connect/onboard 500: (1) POST /api/auth/login {email:'pro.test@auxora.fr', password:'Test1234!'} → 200 with token; (2) POST /api/connect/onboard -H 'Authorization: Bearer <tok>' -d '{}' → 500 Internal Server Error. Backend log shows stripe._error.InvalidRequestError from stripe.Account.create at services/payments.py:212 with Stripe message 'Stripe no longer recommends Accounts v1 for new Connect integrations. Create connected accounts with POST /v2/core/accounts instead… enable Accounts v1 support in the Dashboard'. Root cause: since the previous artisan's acct_mock_ was deleted from db.stripe_accounts, connect_onboard falls through to create_connect_account which calls the deprecated v1 Accounts API and Stripe now refuses. Not a regression of the mock-cleanup fix, but a Stripe API surface change that only manifests now that live calls actually reach Stripe. Mitigation: enable v1 in the Stripe Dashboard toggle, or migrate to /v2/core/accounts, plus a try/except guard around the call to guarantee no bare 500 ever leaks."
+}

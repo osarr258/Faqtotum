@@ -1,0 +1,80 @@
+{
+  "summary": "Sprint 1 brique 1 — Stripe MOCK→Live-Test switch validation. Ran full backend pytest suite 3 consecutive times: 280 passed / 19 skipped / 0 failed each (~81s), stable and reproducible. All 7 tests in test_stripe_boot_validation.py pass: MOCK_MODE auto-inferred from key prefix (dev has real sk_test_51U5YY2… keys, MOCK_MODE=False), and production subprocess boots fail-fast when STRIPE_API_KEY is missing / is a test key / STRIPE_WEBHOOK_SECRET is not whsec_ / STRIPE_PUBLISHABLE_KEY is not pk_live_. The 19 skipped items are all the legacy MOCK-mode tests in test_fintech_sprint.py, correctly gated by pytestmark=pytest.mark.skipif(not payments.MOCK_MODE, …). APPLE_AUDIENCES_PROD fail-fast still works (verified via existing suite). HTTP smoke against public URL: /api/ returns 'Faqtotum API'; email login OK for client.test and pro.test; /auth/apple with bogus 64-char token returns 401 (JWKS reject path); /auth/google with bogus session_token returns 4xx. 9/10 Stripe live-mode HTTP smoke tests pass. **1 CRITICAL 500 found on /api/connect/status** for the artisan pro.test@auxora.fr: the DB still has a stale acct_mock_03048f79be0843 from the MOCK era, so stripe.Account.retrieve() throws PermissionError against the real Stripe test API. DB scan revealed 587 stale pi_mock_* payments and 1 stale acct_mock_* connect account — every artisan/booking that onboarded in mock mode will 500 on their next Stripe touchpoint. Reported to main agent as retest_needed.",
+  "backend_issues": {
+    "critical": [
+      {
+        "endpoint": "GET /api/connect/status",
+        "issue": "500 Internal Server Error for pro.test@auxora.fr. RCA: MOCK-era acct_mock_03048f79be0843 persisted in db.stripe_accounts is now dereferenced against real Stripe test-mode API in retrieve_account() → stripe._error.PermissionError (account does not exist) → unhandled → 500. Every artisan who onboarded before Sprint 1 will hit this. DB has 1 stale acct_mock_ record and 587 stale pi_mock_ payments; any code path (payments/create-intent, intervention deposit/final flows, escrows) that later dereferences those IDs will also 500.",
+        "priority": "CRITICAL"
+      }
+    ],
+    "minor": [
+      {
+        "endpoint": "services/payments.py:53-55",
+        "issue": "STRIPE_API_KEY/STRIPE_WEBHOOK_SECRET/STRIPE_PUBLISHABLE_KEY are read via os.environ.get(key, '') and the shell env currently contains STRIPE_API_KEY=sk_test_emergent (placeholder). Because load_dotenv is called with override=False, the shell placeholder wins over the real .env value in any non-supervisor-launched shell (e.g. ad-hoc `python -c 'from services import payments'` returns MOCK_MODE=False but STRIPE_API_KEY='sk_test_emergent' when both are set to sk_test_*). Currently harmless (both are sk_test_*, MOCK_MODE stays False), but if a shell or CI ever exports STRIPE_API_KEY='' it will silently mask the .env. Consider load_dotenv(override=True) or explicitly document the precedence."
+      }
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_stripe_boot_validation.py",
+    "/app/backend/tests/test_sprint1_stripe_live_smoke.py",
+    "/app/test_reports/pytest/sprint1_stripe_live_run1.xml",
+    "/app/test_reports/pytest/sprint1_stripe_live_run2.xml",
+    "/app/test_reports/pytest/sprint1_stripe_live_run3.xml"
+  ],
+  "action_items": [
+    "Harden retrieve_account() (services/payments.py:234) and/or connect_status route (routes/payments.py:79) with a try/except around the real Stripe call — on stripe._error.PermissionError / InvalidRequestError, return a graceful {connected: True, needs_reonboarding: True, stale_mock_id: true} shape instead of propagating 500. Cheapest safe guard: `if account_id.startswith('acct_mock_'): return {…, 'needs_reonboarding': True}` at the top of retrieve_account.",
+    "Add a one-off migration to scrub MOCK residue from the DB before enabling live-Stripe reads across the app: `db.stripe_accounts.delete_many({stripe_account_id: /^acct_mock_/})` and `db.payments.update_many({stripe_payment_intent_id: /^pi_mock_/}, {\\$set: {status: 'legacy_mock_voided'}})` — currently 1 acct_mock and 587 pi_mock rows are latent land-mines.",
+    "Also wrap create_transfer / refund_payment / verify_webhook and the create-intent existing-payment lookup (routes/payments.py:105) so a stale pi_mock_/tr_mock_ cannot 500 the whole endpoint if a caller later touches an old booking.",
+    "Optionally: in payments.py boot, log a WARN and count db.stripe_accounts by acct_mock_ prefix at import time so ops sees the residue before real traffic hits it."
+  ],
+  "critical_code_review_comments": [
+    "services/payments.py:234-245 (retrieve_account): no try/except around stripe.Account.retrieve — any Stripe error (rate-limit, deleted account, PermissionError from stale ID) becomes a 500. All Stripe wrappers in this file (create_connect_account, create_account_link, create_payment_intent, create_transfer, refund_payment, create_subscription, get_or_create_customer) have the same pattern. Consider a small decorator that maps stripe._error.* to 502 Bad Gateway with a user-safe message for wrapper-external callers, while still letting boot validation stay strict.",
+    "services/payments.py:53-55: env vars use `os.environ.get(key, '')`. If any earlier caller (or shell) exports STRIPE_API_KEY=sk_test_emergent it silently overrides .env because load_dotenv is called with override=False. Fine today because supervisor launches with a clean env, but flag for hardening.",
+    "routes/payments.py:79 connect_status: fresh = payments.retrieve_account(row['stripe_account_id']) has no fallback — even a network hiccup surfaces as 500. Should degrade gracefully to the cached DB row (charges_enabled/payouts_enabled already stored)."
+  ],
+  "updated_files": [],
+  "success_rate": {
+    "backend": "99.6% — 280 passed / 19 skipped / 0 failed (unit+integration) × 3 consecutive runs. HTTP smoke: 9/10 pass; 1 real 500 on /api/connect/status for artisan due to stale mock ID.",
+    "frontend": "N/A — backend-only review"
+  },
+  "seed_data_creation": "None. Tests use existing seeded users (client.test@auxora.fr, pro.test@auxora.fr). DB scan noted 1 legacy acct_mock_ row and 587 pi_mock_ rows — pre-existing residue from Sprint 0.",
+  "retest_needed": true,
+  "should_main_agent_self_test": false,
+  "per_run_results": {
+    "run_1": "280 passed, 19 skipped, 2 warnings in 84.11s",
+    "run_2": "280 passed, 19 skipped, 2 warnings in 80.90s",
+    "run_3": "280 passed, 19 skipped, 2 warnings in 80.94s",
+    "stripe_boot_validation_isolated": "7 passed in 0.72s",
+    "http_smoke_live_mode": "9 passed / 1 failed (connect_status 500 — see backend_issues.critical)"
+  },
+  "coverage_of_review_requirements": {
+    "MOCK_MODE_auto_off_with_real_test_key": "PASS (test_current_dev_has_real_test_mode_keys)",
+    "prod_refuses_missing_api_key": "PASS",
+    "prod_refuses_sk_test_in_live": "PASS",
+    "prod_refuses_missing_webhook_secret": "PASS",
+    "prod_refuses_wrong_publishable_key": "PASS",
+    "prod_accepts_valid_live_config": "PASS",
+    "dev_tolerates_missing_stripe": "PASS",
+    "fintech_sprint_legacy_skipped_not_failed": "PASS (19 SKIPPED via pytestmark.skipif(not MOCK_MODE))",
+    "full_suite_stable_over_3_runs": "PASS (280 passed / 19 skipped / 0 failed × 3)",
+    "apple_audiences_prod_boot_check_still_works": "PASS (existing test_apple_audiences_env_split suite still green)",
+    "root_endpoint_faqtotum_api": "PASS",
+    "auth_email_login_client_and_artisan": "PASS",
+    "apple_bogus_token_returns_401_not_500": "PASS",
+    "google_bogus_token_returns_4xx_not_500": "PASS",
+    "connect_status_artisan_no_500": "FAIL — 500 on stale acct_mock_ ID (see critical bug)",
+    "connect_status_client_no_500": "PASS",
+    "payments_create_intent_client_no_500": "PASS (404 on unknown booking as expected)",
+    "escrows_mine_client_no_500": "PASS",
+    "payment_summary_missing_intervention_no_500": "PASS"
+  },
+  "context_for_next_testing_agent": "Backend suite is stable at 280 passed / 19 skipped / 0 failed. The 19 skips are legacy fintech_sprint tests, gated by MOCK_MODE=False — expected and correct. The Stripe live-mode boot fail-fast (services/payments.py:67-86) is fully validated. **The blocker**: 1 stale acct_mock_ id and 587 stale pi_mock_ ids remain in MongoDB from the MOCK era, and the current backend blindly forwards them to real Stripe → 500. After the main agent adds the graceful-fallback + migration, re-run test_sprint1_stripe_live_smoke.py to confirm test_connect_status_artisan_no_500 passes. The shell env carries STRIPE_API_KEY=sk_test_emergent (placeholder) — when running the backend via supervisor this is fine because supervisor sources the real .env, but any ad-hoc python invocation may show the wrong value. Use the running server (curl to the public URL) as source of truth, not `python -c 'from services import payments'` in the shell.",
+  "rca_of_issue": "Reproduction: (1) login as pro.test@auxora.fr (POST /api/auth/login, 200), (2) GET /api/connect/status with the returned token → 500. Root cause: services/payments.py:245 calls stripe.Account.retrieve(account_id) with account_id='acct_mock_03048f79be0843', which was written to db.stripe_accounts during the previous MOCK_MODE=True regime. Under MOCK_MODE=False (Sprint 1), this is now a real Stripe API call and Stripe returns 403 account_invalid → stripe._error.PermissionError bubbles up unhandled through routes/payments.py:79 → FastAPI 500. Mitigation (main agent): (a) short-circuit retrieve_account when account_id starts with 'acct_mock_'; (b) wrap the Stripe call in try/except and degrade to the last cached DB values (charges_enabled/payouts_enabled/details_submitted are already persisted); (c) run a one-shot cleanup: delete_many stripe_accounts where stripe_account_id ~ /^acct_mock_/, and mark payments with pi_mock_ prefix as 'legacy_mock_voided'. Same defensive pattern should be added to create_transfer / refund_payment / create-intent lookup because 587 pi_mock_ rows sit in db.payments."
+}

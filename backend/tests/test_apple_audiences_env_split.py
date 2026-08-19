@@ -114,6 +114,13 @@ def test_boot_fails_fast_on_misconfig(tmp_path, monkeypatch):
     env["APPLE_AUDIENCES_PROD"] = f"com.faqtotum.app,{_APPLE_EXPO_GO_AUD}"
     env["ALLOWED_ORIGINS"] = "https://faqtotum.example.com"
     env["APPLE_AUDIENCES_DEV"] = ""
+    # Provide production-valid Stripe placeholders so the Stripe boot check
+    # passes and we actually reach the Apple audiences check (which is the
+    # subject of this test).
+    env["STRIPE_API_KEY"] = "sk_live_boot_test_placeholder_never_used"
+    env["STRIPE_PUBLISHABLE_KEY"] = "pk_live_boot_test_placeholder"
+    env["STRIPE_WEBHOOK_SECRET"] = "whsec_boot_test_placeholder"
+    env["MFA_ENCRYPTION_KEY"] = "aTBmk1uEQBoBt8j2rW1Fx1FqDGnKzYbCPiE-hh17MK4="
 
     proc = subprocess.run(
         ["python", "-c", "import sys; sys.path.insert(0, '/app/backend'); import server"],

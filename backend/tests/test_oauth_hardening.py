@@ -118,7 +118,10 @@ def test_apple_endpoint_rejects_too_short_token():
 
 
 def test_apple_audiences_env_parsing(monkeypatch):
+    monkeypatch.delenv("APPLE_AUDIENCES_DEV", raising=False)
+    monkeypatch.delenv("APPLE_AUDIENCES_PROD", raising=False)
     monkeypatch.setenv("APPLE_AUDIENCES", "aud1, aud2 ,, aud3")
+    monkeypatch.setenv("APP_ENV", "development")
     assert auth_routes._apple_audiences() == ["aud1", "aud2", "aud3"]
     monkeypatch.delenv("APPLE_AUDIENCES")
     defaults = auth_routes._apple_audiences()

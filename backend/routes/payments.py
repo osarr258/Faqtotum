@@ -46,28 +46,39 @@ def build_payments_router(**deps) -> APIRouter:
             raise HTTPException(status_code=400, detail="Créez d'abord votre profil artisan")
 
         existing = await db.stripe_accounts.find_one({"user_id": user["user_id"]}, {"_id": 0})
-        if existing:
-            acct_id = existing["stripe_account_id"]
-        else:
-            acct = payments.create_connect_account(user["email"], body.country)
-            acct_id = acct["id"]
-            await db.stripe_accounts.insert_one({
-                "user_id": user["user_id"],
-                "artisan_id": profile["artisan_id"],
-                "stripe_account_id": acct_id,
-                "country": body.country,
-                "charges_enabled": False,
-                "payouts_enabled": False,
-                "details_submitted": False,
-                "created_at": payments.now_utc_iso(),
-            })
-            await payments.audit(db, user["user_id"], "connect.account_created", acct_id, {"artisan_id": profile["artisan_id"]})
+        try:
+            if existing:
+                acct_id = existing["stripe_account_id"]
+            else:
+                acct = payments.create_connect_account(user["email"], body.country)
+                acct_id = acct["id"]
+                await db.stripe_accounts.insert_one({
+                    "user_id": user["user_id"],
+                    "artisan_id": profile["artisan_id"],
+                    "stripe_account_id": acct_id,
+                    "country": body.country,
+                    "charges_enabled": False,
+                    "payouts_enabled": False,
+                    "details_submitted": False,
+                    "created_at": payments.now_utc_iso(),
+                })
+                await payments.audit(db, user["user_id"], "connect.account_created", acct_id, {"artisan_id": profile["artisan_id"]})
 
-        link = payments.create_account_link(
-            acct_id,
-            return_url=f"{payments.PLATFORM_URL}/connect/return",
-            refresh_url=f"{payments.PLATFORM_URL}/connect/refresh",
-        )
+            link = payments.create_account_link(
+                acct_id,
+                return_url=f"{payments.PLATFORM_URL}/connect/return",
+                refresh_url=f"{payments.PLATFORM_URL}/connect/refresh",
+            )
+        except payments.StripeAccountUnavailable as exc:
+            # Structured 503 instead of a bare 500 when Stripe rejects the
+            # Accounts API (v1 deprecated, live-mode not activated, etc.).
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "code": "STRIPE_CONNECT_UNAVAILABLE",
+                    "message": str(exc),
+                },
+            )
         return {"onboarding_url": link["url"], "expires_at": link.get("expires_at"), "stripe_account_id": acct_id, "mock_mode": payments.MOCK_MODE}
 
 

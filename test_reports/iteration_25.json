@@ -1,0 +1,59 @@
+{
+  "summary": "Sprint 1 brique 1 — 3rd testing pass after main agent's fix of the /api/connect/onboard 500 (Stripe Accounts v1 deprecation). CONFIRMED FIXED. POST /api/connect/onboard with pro.test@auxora.fr now returns HTTP 503 with structured detail {code:'STRIPE_CONNECT_UNAVAILABLE', message:'Stripe Connect Express n\\'est pas encore activé sur ce compte. Activez « Accounts v1 support » dans le Dashboard Stripe → Settings → Connect.'} — NO bare 500 leaked. GET /api/connect/status stays 200 (iteration 23 fix still holds). Added new regression file test_sprint1_connect_onboard_no_500.py (4 tests, all passing) covering: artisan onboard never 500 (accepts 200 OR 503 with structured code), client onboard=403, no-auth=401, status=200. Full pytest suite is now 294 passed / 19 skipped / 0 failed / 0 errors in 91s (previous baseline 290/19/0 + 4 new onboard tests). Previous Sprint 1 smoke suite (10 tests) also 10/10 green. All review acceptance criteria met.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {
+        "endpoint": "services/payments.py — remaining Stripe wrappers (create_payment_intent, create_subscription, get_or_create_customer, cancel_subscription)",
+        "issue": "These wrappers still call the live Stripe API without try/except. Only create_connect_account, create_account_link, retrieve_account, create_transfer, refund_payment are hardened. A transient Stripe outage or API change on the other wrappers can still surface as 500. Not blocking Sprint 1 but recommend adding a small @stripe_safe decorator mapping stripe.error.StripeError → 503 STRIPE_UNAVAILABLE for consistency."
+      }
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_sprint1_connect_onboard_no_500.py",
+    "/app/backend/tests/test_sprint1_stripe_live_smoke.py",
+    "/app/backend/tests/test_stripe_boot_validation.py",
+    "/app/test_reports/pytest/iter25_smoke.xml",
+    "/app/test_reports/pytest/iter25_full.xml"
+  ],
+  "action_items": [
+    "OPTIONAL: extend the @stripe_safe pattern (StripeAccountUnavailable → 503) to create_payment_intent / create_subscription / get_or_create_customer / cancel_subscription — Sprint 1 review does not block on this but it will prevent future 500s on marketplace paths.",
+    "OPTIONAL: enable 'Accounts v1 support' in the Stripe Dashboard (https://dashboard.stripe.com/settings/features/feat_accounts_v1_support) OR migrate create_connect_account to POST /v2/core/accounts so artisans can actually complete onboarding — right now every artisan gets 503. The endpoint is correct/safe but the happy-path is still blocked at the Stripe level.",
+    "OPTIONAL: routes/payments.py:52-63 still inserts the stripe_accounts row BEFORE create_account_link succeeds — with the new 503 path this is no longer strictly buggy (row is inserted only on the create-account branch), but if create_account_link then raises StripeAccountUnavailable the DB row exists without a functional link. Consider inserting only after link creation succeeds."
+  ],
+  "critical_code_review_comments": [
+    "services/payments.py:200-234 — StripeAccountUnavailable pattern is clean: InvalidRequestError → structured French message + logger.error, StripeError → generic 'temporairement indisponible' fallback. Route translates to 503 with machine-readable code. Good separation of concerns.",
+    "services/payments.py:246-264 — create_account_link catches InvalidRequestError AND PermissionError which is correct (v1-deprecated new accounts will fail the link step too). Message correctly says 'compte doit être recréé'.",
+    "services/payments.py:237-244 — StripeAccountUnavailable class defined AFTER create_connect_account uses it (line 226). Works at runtime because Python resolves names at call time, but ordering is a minor readability nit — move the class definition ABOVE the wrappers."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_sprint1_connect_onboard_no_500.py (NEW — 4 regression tests)"
+  ],
+  "success_rate": {
+    "backend": "100% on review scope: (1) connect/onboard no-500 ✅ 503 with STRIPE_CONNECT_UNAVAILABLE, (2) connect/status 200 ✅, (3) full suite 294/19/0 ✅, (4) smoke tests 10/10 ✅. All 14 Sprint 1 smoke tests green. No 500 anywhere.",
+    "frontend": "N/A — backend-only review"
+  },
+  "seed_data_creation": "None. Existing test artisan pro.test@auxora.fr / art_2dfb71f00c16 reused.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "per_run_results": {
+    "curl_connect_onboard_pro_test": "HTTP 503 body={\"detail\":{\"code\":\"STRIPE_CONNECT_UNAVAILABLE\",\"message\":\"Stripe Connect Express n'est pas encore activé sur ce compte. Activez « Accounts v1 support » dans le Dashboard Stripe → Settings → Connect.\"}}",
+    "sprint1_smoke_full": "14 passed / 0 failed in 6.76s (10 legacy + 4 new onboard regression)",
+    "pytest_full_suite": "294 passed, 19 skipped, 0 failed, 2 warnings in 91.38s"
+  },
+  "coverage_of_review_requirements": {
+    "connect_onboard_no_bare_500": "PASS — returns 503 with detail.code='STRIPE_CONNECT_UNAVAILABLE'",
+    "connect_onboard_200_or_503": "PASS — 503 branch active (Stripe refuses v1), regression test accepts 200 also",
+    "connect_status_artisan_200": "PASS — 200 {connected:false}",
+    "full_suite_290_19_0_or_better": "PASS — 294/19/0 (added 4 new tests, all pass, no regression)",
+    "no_500_anywhere_in_smoke": "PASS — 14/14 Sprint 1 smoke tests green, no 500 observed"
+  },
+  "context_for_next_testing_agent": "Sprint 1 brique 1 blockers are now ALL closed: iteration_23 fixed connect/status 500, iteration_24 fixed acct_mock_ residue, iteration_25 confirms fix for connect/onboard 500 (now returns structured 503). Review sign-off criteria fully met. Next testing pass can move on to actual onboarding happy-path once Stripe Dashboard 'Accounts v1 support' toggle is enabled or the code is migrated to /v2/core/accounts — that is a Stripe-side/main-agent decision, not a code bug. Test infra: /app/backend/tests/test_sprint1_stripe_live_smoke.py + test_sprint1_connect_onboard_no_500.py + test_stripe_boot_validation.py cover all Sprint 1 no-500 guarantees.",
+  "rca_of_issue": "Previous iteration's bug: services/payments.py::create_connect_account bare-called stripe.Account.create(type='express') which Stripe rejected with InvalidRequestError ('Accounts v1 deprecated'), producing a bare 500. Fix applied by main agent: (1) added StripeAccountUnavailable(RuntimeError) exception class; (2) wrapped stripe.Account.create in try/except catching stripe.error.InvalidRequestError → raises StripeAccountUnavailable with French message pointing to Dashboard toggle, and stripe.error.StripeError → generic 'temporarily unavailable' message; (3) same defensive wrap on create_account_link catching InvalidRequestError/PermissionError; (4) routes/payments.py::connect_onboard catches StripeAccountUnavailable and returns HTTPException(status_code=503, detail={code:'STRIPE_CONNECT_UNAVAILABLE', message:str(exc)}). Verification: curl POST /api/connect/onboard with valid artisan token → HTTP 503 with the expected structured detail. Backend log shows no traceback (exception caught cleanly). Regression test added at /app/backend/tests/test_sprint1_connect_onboard_no_500.py to guard against future regressions."
+}

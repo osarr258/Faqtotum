@@ -32,10 +32,17 @@ import os
 import uuid
 import time
 import logging
+from pathlib import Path
 from typing import Optional, Dict, Any, List
 from datetime import datetime, timezone
 
 import stripe
+from dotenv import load_dotenv
+
+# Load .env once at module import. `override=False` (default) so a caller can
+# still pin STRIPE_* via the process env (used e.g. by tests that fake a
+# production deploy). Idempotent and cheap.
+load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
 logger = logging.getLogger(__name__)
 
@@ -45,9 +52,38 @@ logger = logging.getLogger(__name__)
 
 STRIPE_API_KEY = os.environ.get("STRIPE_API_KEY", "")
 STRIPE_WEBHOOK_SECRET = os.environ.get("STRIPE_WEBHOOK_SECRET", "")
+STRIPE_PUBLISHABLE_KEY = os.environ.get("STRIPE_PUBLISHABLE_KEY", "")
 PLATFORM_URL = os.environ.get("PLATFORM_URL", "http://localhost:3000")
+_APP_ENV = os.environ.get("APP_ENV", "development").strip().lower()
 
-MOCK_MODE = STRIPE_API_KEY in ("", "sk_test_emergent", "sk_test_placeholder")
+# MOCK_MODE is inferred from the key: any placeholder / empty / non-Stripe
+# value → mock. Only strings starting with `sk_test_` or `sk_live_` count as
+# a real key.
+_HAS_REAL_KEY = STRIPE_API_KEY.startswith(("sk_test_", "sk_live_"))
+MOCK_MODE = not _HAS_REAL_KEY
+
+# Fail-closed in production: refuse to boot if Stripe is not correctly wired.
+# This mirrors the APPLE_AUDIENCES_PROD structural safeguard.
+if _APP_ENV == "production":
+    if MOCK_MODE:
+        raise SystemExit(
+            "[FATAL] STRIPE_API_KEY missing or invalid in production. "
+            "Set STRIPE_API_KEY=sk_live_... in the prod .env before starting."
+        )
+    if not STRIPE_API_KEY.startswith("sk_live_"):
+        raise SystemExit(
+            "[FATAL] STRIPE_API_KEY must start with 'sk_live_' in production, "
+            f"got '{STRIPE_API_KEY[:8]}...'. Refusing to start."
+        )
+    if not STRIPE_WEBHOOK_SECRET.startswith("whsec_"):
+        raise SystemExit(
+            "[FATAL] STRIPE_WEBHOOK_SECRET missing or invalid in production. "
+            "Webhooks would be accepted unsigned. Refusing to start."
+        )
+    if not STRIPE_PUBLISHABLE_KEY.startswith("pk_live_"):
+        raise SystemExit(
+            "[FATAL] STRIPE_PUBLISHABLE_KEY must start with 'pk_live_' in production."
+        )
 
 if not MOCK_MODE:
     stripe.api_key = STRIPE_API_KEY
@@ -173,40 +209,110 @@ def create_connect_account(email: str, country: str = "FR") -> Dict[str, Any]:
             "requirements": {"currently_due": ["individual.first_name", "individual.last_name", "external_account"]},
             "capabilities": {"card_payments": "inactive", "transfers": "inactive"},
         }
-    acc = stripe.Account.create(
-        type="express",
-        country=country,
-        email=email,
-        capabilities={"card_payments": {"requested": True}, "transfers": {"requested": True}},
-    )
-    return acc.to_dict()
+    try:
+        acc = stripe.Account.create(
+            type="express",
+            country=country,
+            email=email,
+            capabilities={"card_payments": {"requested": True}, "transfers": {"requested": True}},
+        )
+        return acc.to_dict()
+    except stripe.error.InvalidRequestError as exc:
+        # Modern Stripe accounts (created after June 2026) require enabling
+        # "Accounts v1 support" in the Dashboard or migrating to v2. Surface
+        # a machine-readable error instead of a 500 so the frontend can
+        # prompt the artisan with an actionable message.
+        logger.error("Stripe account create failed: %s", exc.user_message or str(exc))
+        raise StripeAccountUnavailable(
+            "Stripe Connect Express n'est pas encore activé sur ce compte. "
+            "Activez « Accounts v1 support » dans le Dashboard Stripe → Settings → Connect."
+        ) from exc
+    except stripe.error.StripeError as exc:
+        logger.error("Stripe account create unexpected error: %s", exc)
+        raise StripeAccountUnavailable(
+            "Le service Stripe est temporairement indisponible. Réessayez dans un instant."
+        ) from exc
+
+
+class StripeAccountUnavailable(RuntimeError):
+    """Raised when Stripe Connect account creation is unavailable.
+
+    Surfaces as HTTP 503 (Service Unavailable) with a French error message,
+    not a bare 500. Callers should catch this and translate to a proper
+    response.
+    """
+    pass
 
 def create_account_link(account_id: str, return_url: str, refresh_url: str) -> Dict[str, Any]:
-    if MOCK_MODE:
+    if MOCK_MODE or _is_mock_id(account_id):
         return {
             "url": f"{PLATFORM_URL}/connect/mock-onboarding?acct={account_id}",
             "expires_at": int(time.time()) + 300,
         }
-    link = stripe.AccountLink.create(
-        account=account_id,
-        return_url=return_url,
-        refresh_url=refresh_url,
-        type="account_onboarding",
-    )
-    return link.to_dict()
+    try:
+        link = stripe.AccountLink.create(
+            account=account_id,
+            return_url=return_url,
+            refresh_url=refresh_url,
+            type="account_onboarding",
+        )
+        return link.to_dict()
+    except (stripe.error.InvalidRequestError, stripe.error.PermissionError) as exc:
+        logger.warning("Stripe account_link failed for %s: %s", account_id, exc)
+        raise StripeAccountUnavailable(
+            "Impossible de générer le lien d'onboarding Stripe. Le compte doit être recréé."
+        ) from exc
+
+def _is_mock_id(_id: Optional[str]) -> bool:
+    """Detect legacy MOCK_MODE identifiers still stored in the DB.
+
+    Backend was in MOCK_MODE before Sprint 1 (June 2026), so `acct_mock_*`,
+    `pi_mock_*`, `tr_mock_*` values remain in various collections. Passing
+    them to the real Stripe API returns 400/404 and crashes the endpoint.
+    Callers use this helper to short-circuit gracefully.
+    """
+    if not _id or not isinstance(_id, str):
+        return False
+    return "_mock_" in _id
+
 
 def retrieve_account(account_id: str) -> Dict[str, Any]:
-    if MOCK_MODE:
-        # After the mock onboarding the account looks "verified".
+    if MOCK_MODE or _is_mock_id(account_id):
+        # Either we're still fully mocked, or we've been switched to live
+        # but this artisan still has a legacy `acct_mock_*` id from the
+        # Sprint 0 mock era. Return a shape that flags "needs re-onboarding"
+        # so the caller (routes/payments.py::connect_status) knows to prompt
+        # the artisan to click "Reconnecter Stripe" instead of 500-ing.
         return {
             "id": account_id,
-            "charges_enabled": True,
-            "payouts_enabled": True,
-            "details_submitted": True,
-            "requirements": {"currently_due": []},
-            "capabilities": {"card_payments": "active", "transfers": "active"},
+            "charges_enabled": False,
+            "payouts_enabled": False,
+            "details_submitted": False,
+            "requirements": {"currently_due": ["reonboarding_required"]},
+            "capabilities": {"card_payments": "inactive", "transfers": "inactive"},
+            "legacy_mock": _is_mock_id(account_id),
         }
-    return stripe.Account.retrieve(account_id).to_dict()
+    try:
+        return stripe.Account.retrieve(account_id).to_dict()
+    except stripe.error.PermissionError:
+        # Account exists on a different platform, or has been rejected.
+        return {
+            "id": account_id,
+            "charges_enabled": False, "payouts_enabled": False,
+            "details_submitted": False,
+            "requirements": {"currently_due": ["reonboarding_required"]},
+            "capabilities": {"card_payments": "inactive", "transfers": "inactive"},
+            "error": "permission_denied",
+        }
+    except stripe.error.InvalidRequestError:
+        return {
+            "id": account_id,
+            "charges_enabled": False, "payouts_enabled": False,
+            "details_submitted": False,
+            "requirements": {"currently_due": ["reonboarding_required"]},
+            "capabilities": {"card_payments": "inactive", "transfers": "inactive"},
+            "error": "invalid_request",
+        }
 
 def create_payment_intent(amount_cents: int, currency: str, metadata: Dict[str, str],
                            customer_email: Optional[str] = None) -> Dict[str, Any]:
@@ -241,7 +347,7 @@ def create_payment_intent(amount_cents: int, currency: str, metadata: Dict[str, 
 def create_transfer(amount_cents: int, currency: str, destination: str, transfer_group: str,
                      metadata: Dict[str, str]) -> Dict[str, Any]:
     """Move funds from the platform balance to a connected account."""
-    if MOCK_MODE:
+    if MOCK_MODE or _is_mock_id(destination):
         return {
             "id": _mock_id("tr"),
             "amount": amount_cents,
@@ -250,6 +356,7 @@ def create_transfer(amount_cents: int, currency: str, destination: str, transfer
             "transfer_group": transfer_group,
             "metadata": metadata,
             "created": int(time.time()),
+            "legacy_mock": _is_mock_id(destination),
         }
     tr = stripe.Transfer.create(
         amount=amount_cents,
@@ -262,13 +369,14 @@ def create_transfer(amount_cents: int, currency: str, destination: str, transfer
 
 def refund_payment(payment_intent_id: str, amount_cents: Optional[int] = None,
                     reason: Optional[str] = None) -> Dict[str, Any]:
-    if MOCK_MODE:
+    if MOCK_MODE or _is_mock_id(payment_intent_id):
         return {
             "id": _mock_id("re"),
             "payment_intent": payment_intent_id,
             "amount": amount_cents,
             "reason": reason,
             "status": "succeeded",
+            "legacy_mock": _is_mock_id(payment_intent_id),
         }
     params: Dict[str, Any] = {"payment_intent": payment_intent_id}
     if amount_cents is not None:
