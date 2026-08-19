@@ -228,10 +228,15 @@ export default function ConciergeConversation() {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy).catch(() => {});
     setSending(true);
     try {
-      // Créneau "maintenant" arrondi à l'heure suivante.
       const now = new Date();
       const dateIso = now.toISOString().slice(0, 10);
       const hh = String((now.getHours() + 1) % 24).padStart(2, "0");
+      // FAQTOTUM V1 — Extraction de l'estimation : d'abord depuis le summary
+      // (source de vérité) puis fallback sur live_diagnosis courant.
+      const priceMin =
+        (sum as any)?.price_min_eur ?? current?.live_diagnosis?.price_min_eur;
+      const priceMax =
+        (sum as any)?.price_max_eur ?? current?.live_diagnosis?.price_max_eur;
       const bc = await api<{ broadcast_id: string; candidates_count: number }>(
         "/broadcasts",
         {
@@ -242,17 +247,16 @@ export default function ConciergeConversation() {
             slot: `${hh}:00-${String((parseInt(hh, 10) + 2) % 24).padStart(2, "0")}:00`,
             description: sum?.problem || current?.live_diagnosis?.issue || "",
             urgent: true,
+            estimated_price_min_eur: priceMin,
+            estimated_price_max_eur: priceMax,
           },
         },
       );
-      // Redirection vers l'écran de suivi broadcast (à créer plus tard).
-      // En attendant, on remonte au home client avec un flag.
       router.push({
         pathname: "/matching",
         params: { broadcast_id: bc.broadcast_id },
       });
     } catch (e) {
-      // Fallback : ouvre la recherche classique du métier.
       router.push({ pathname: "/category/[slug]", params: { slug: trade } });
     } finally {
       setSending(false);
@@ -366,7 +370,7 @@ export default function ConciergeConversation() {
             <SummaryLine icon="hammer" label="Métier" value={current.summary.trade_label} />
             <SummaryLine icon="time" label="Durée" value={current.summary.duration_hours} />
             <SummaryLine icon="pricetag" label="Budget" value={current.summary.price_range_eur} />
-            <SummaryLine icon="flame" label="Urgence" value={current.summary.urgency} />
+            <SummaryLine icon="flame" label="Urgence" value={current.summary.urgence || current.summary.urgency} />
             {current.summary.safety_advice && <SummaryLine icon="shield-checkmark" label="Sécurité" value={current.summary.safety_advice} />}
             {current.summary.preparation_tips?.length > 0 && (
               <View style={{ marginTop: spacing.md }}>
@@ -379,6 +383,65 @@ export default function ConciergeConversation() {
                 ))}
               </View>
             )}
+
+            {/* FAQTOTUM V1 — Bloc ESTIMATION + CAUTION 7 %. */}
+            {(() => {
+              const s = current.summary as any;
+              const priceMin = s.price_min_eur ?? current.live_diagnosis?.price_min_eur;
+              const priceMax = s.price_max_eur ?? current.live_diagnosis?.price_max_eur;
+              if (!priceMax) return null;
+              const cautionCents = Math.round(priceMax * 100 * 0.07);
+              const cautionEur = (cautionCents / 100).toFixed(2).replace(".", ",");
+              const rangeText =
+                priceMin && priceMin !== priceMax
+                  ? `${priceMin} € — ${priceMax} €`
+                  : `${priceMax} €`;
+              return (
+                <View testID="estimation-block" style={styles.estimationBlock}>
+                  <Txt
+                    weight="extrabold"
+                    size="sm"
+                    color={colors.textInverse}
+                    style={{ letterSpacing: 1.5 }}
+                  >
+                    ESTIMATION FAQTOTUM
+                  </Txt>
+                  <Txt
+                    weight="extrabold"
+                    size="3xl"
+                    color={colors.textInverse}
+                    style={{ marginTop: 4 }}
+                  >
+                    {rangeText}
+                  </Txt>
+                  <Txt size="sm" color="#B4B4B4" style={{ marginTop: 4, lineHeight: 18 }}>
+                    Estimation indicative. Le prix définitif est fixé par l&apos;artisan après diagnostic sur place.
+                  </Txt>
+                  <View style={styles.cautionRow}>
+                    <View style={{ flex: 1 }}>
+                      <Txt size="sm" color="#B4B4B4">
+                        Caution (7 % de la borne haute)
+                      </Txt>
+                      <Txt
+                        weight="extrabold"
+                        size="xl"
+                        color={colors.textInverse}
+                        style={{ marginTop: 2 }}
+                        testID="caution-amount"
+                      >
+                        {cautionEur} €
+                      </Txt>
+                    </View>
+                    <Ionicons
+                      name="shield-checkmark"
+                      size={22}
+                      color={colors.textInverse}
+                    />
+                  </View>
+                </View>
+              );
+            })()}
+
             {/* FAQTOTUM V1 — Toujours 2 boutons finaux. Même si l'IA détecte
                 l'urgence, le client garde le choix. */}
             <View style={styles.finalActions}>
@@ -533,4 +596,6 @@ const styles = StyleSheet.create({
   finalBtn: { flexDirection: "row", alignItems: "center", padding: spacing.lg, borderRadius: radius.md },
   finalUrgent: { backgroundColor: colors.error },
   finalSchedule: { backgroundColor: colors.brand },
+  estimationBlock: { marginTop: spacing.lg, padding: spacing.lg, borderRadius: radius.md, backgroundColor: "#111111" },
+  cautionRow: { flexDirection: "row", alignItems: "center", marginTop: spacing.md, paddingTop: spacing.md, borderTopWidth: 1, borderTopColor: "rgba(255,255,255,0.15)" },
 });

@@ -54,6 +54,7 @@ from pydantic import BaseModel, Field, validator
 
 from services import matching
 from services import security as security_svc
+from services import caution as caution_svc
 
 
 def _now_utc() -> datetime:
@@ -74,6 +75,10 @@ class BroadcastCreateInput(BaseModel):
     description: str = Field("", max_length=2000)
     urgent: bool = False
     city: Optional[str] = Field(None, max_length=100)
+    # FAQTOTUM V1 — Estimation (fourchette) fournie par l'IA à la fin de la
+    # conversation concierge. Sert à calculer la caution 7 % de la borne haute.
+    estimated_price_min_eur: Optional[float] = Field(None, ge=0, le=100000)
+    estimated_price_max_eur: Optional[float] = Field(None, ge=0, le=100000)
 
     @validator("description")
     def _no_html(cls, v: str) -> str:  # noqa: N805
@@ -89,6 +94,9 @@ class BroadcastAcceptInput(BaseModel):
 PUBLIC_BROADCAST_FIELDS = frozenset({
     "broadcast_id", "client_name", "trade", "date", "slot",
     "description", "urgent", "status", "created_at", "expires_at",
+    # FAQTOTUM V1 — expose estimation + caution aux 2 côtés (client + candidats).
+    "estimated_price_min_eur", "estimated_price_max_eur",
+    "caution_cents", "caution_eur_display",
 })
 
 
@@ -156,6 +164,11 @@ def build_broadcasts_router(
         # 3. Persister le broadcast.
         broadcast_id = _new_id("bc")
         ttl_minutes = 30 if data.urgent else 60
+        # FAQTOTUM V1 — estimation + caution basée sur l'estimation initiale.
+        # Locked à la création : ne PAS recalculer même si prix final change.
+        est_max = data.estimated_price_max_eur
+        est_min = data.estimated_price_min_eur
+        caution_cents = caution_svc.compute_caution_cents(est_max or 0)
         doc = {
             "broadcast_id": broadcast_id,
             "client_id": user["user_id"],
@@ -170,6 +183,10 @@ def build_broadcasts_router(
             "winner_artisan_id": None,
             "winner_booking_id": None,
             "city": data.city,
+            "estimated_price_min_eur": est_min,
+            "estimated_price_max_eur": est_max,
+            "caution_cents": caution_cents,
+            "caution_eur_display": caution_svc.format_eur(caution_cents),
             "created_at": _now_utc().isoformat(),
             "expires_at": (_now_utc() + timedelta(minutes=ttl_minutes)).isoformat(),
         }
@@ -302,6 +319,10 @@ def build_broadcasts_router(
             "urgent": bool(bc.get("urgent")),
             "status": "accepted",
             "broadcast_id": broadcast_id,
+            # FAQTOTUM V1 — Propager l'estimation + caution figées.
+            "estimated_price_min_eur": bc.get("estimated_price_min_eur"),
+            "estimated_price_max_eur": bc.get("estimated_price_max_eur"),
+            "caution_cents": bc.get("caution_cents") or 0,
             "created_at": _now_utc().isoformat(),
         }
         await db.bookings.insert_one(dict(booking_doc))

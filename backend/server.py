@@ -29,6 +29,7 @@ from routes.users import build_users_router
 from routes.artisans import build_artisans_router
 from routes.bookings import build_bookings_router
 from routes.broadcasts import build_broadcasts_router
+from routes.estimation import build_estimation_router
 from routes.missions import build_missions_router
 from routes.interventions import build_interventions_router
 
@@ -1093,6 +1094,10 @@ _modular_broadcasts = build_broadcasts_router(
     db=db, get_current_user=get_current_user, enrich_artisan=enrich_artisan,
 )
 app.include_router(_modular_broadcasts, prefix="/api")
+
+# FAQTOTUM V1 — Estimation & Caution (7 % borne haute)
+_modular_estimation = build_estimation_router(get_current_user=get_current_user)
+app.include_router(_modular_estimation, prefix="/api")
 
 # ------------------------------------------------------------
 # V1 migration (Option B) — mount the 6 partition modules.
