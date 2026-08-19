@@ -1,481 +1,749 @@
 /**
- * Artisan Live Hub — "Available now" toggle, live position, intervention inbox, manual slots.
+ * Artisan Missions — FAQTOTUM v1
+ *
+ * Remplace l'ancien écran "Live" hérité. Structure claire :
+ *
+ *   1. Header (titre + toggle "Disponible maintenant" — essentiel matching)
+ *   2. Segment control : À traiter / En cours / Historique
+ *   3. Liste des missions unifiées (bookings + interventions) selon segment
+ *
+ * Le nom de la route reste "live" pour l'instant (renommage au step 3).
  */
-import React, { useCallback, useEffect, useRef, useState } from "react";
-import { View, StyleSheet, ScrollView, Pressable, Switch, Alert, ActivityIndicator, TextInput } from "react-native";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  View,
+  StyleSheet,
+  ScrollView,
+  Pressable,
+  Switch,
+  Alert,
+  RefreshControl,
+  ActivityIndicator,
+} from "react-native";
 import { useFocusEffect, useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import * as Location from "expo-location";
 import * as Haptics from "expo-haptics";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import Animated, { FadeInUp } from "react-native-reanimated";
 import { Txt } from "@/src/components/ui";
+import RequestCard from "@/src/components/RequestCard";
+import MissionCard, { MissionData } from "@/src/components/MissionCard";
 import { api } from "@/src/api";
+import { colors, radius, spacing } from "@/src/theme";
 
-const COLORS = {
-  bg: "#0B0B0B",
-  bgSoft: "#141416",
-  white: "#FFFFFF",
-  accent: "#C8A96B",
-  secondary: "#B8B8B8",
-  muted: "#6E6E73",
-  border: "#1F1F22",
-  success: "#34D399",
-  error: "#F87171",
+type Booking = {
+  booking_id: string;
+  conversation_id?: string;
+  client_name: string;
+  trade_name?: string;
+  date: string;
+  slot: string;
+  description?: string;
+  status: string;
+  urgent?: boolean;
 };
 
 type Intervention = {
   intervention_id: string;
-  description: string;
-  status: string;
-  created_at: string;
   client_name?: string;
-  trade?: string;
+  description?: string;
+  status: string;
   urgency?: string;
-  price_estimate_min?: number;
-  price_estimate_max?: number;
+  trade?: string;
+  total_amount_cents?: number;
+  balance_cents?: number;
+  created_at?: string;
 };
-type Slot = { slot_id: string; date: string; start_time: string; duration_min: number };
 
-export default function ArtisanLive() {
+type Segment = "todo" | "active" | "history";
+
+const SEGMENTS: { key: Segment; label: string }[] = [
+  { key: "todo", label: "À traiter" },
+  { key: "active", label: "En cours" },
+  { key: "history", label: "Historique" },
+];
+
+const TODO_STATUSES = new Set([
+  "pending",
+  "requested",
+  "assigned",
+]);
+const ACTIVE_STATUSES = new Set([
+  "accepted",
+  "confirmed",
+  "professional_on_the_way",
+  "en_route",
+  "arrived",
+  "in_progress",
+  "awaiting_validation",
+]);
+const HISTORY_STATUSES = new Set([
+  "completed",
+  "validated",
+  "declined",
+  "refused",
+  "cancelled",
+  "disputed",
+]);
+
+function bookingToMission(b: Booking): MissionData {
+  return {
+    id: b.booking_id,
+    kind: "booking",
+    client_name: b.client_name,
+    trade_name: b.trade_name,
+    date: b.date,
+    slot: b.slot,
+    description: b.description,
+    status: b.status,
+    urgent: b.urgent,
+  };
+}
+
+function interventionToMission(iv: Intervention): MissionData {
+  return {
+    id: iv.intervention_id,
+    kind: "intervention",
+    client_name: iv.client_name || "Client",
+    trade_name: iv.trade,
+    description: iv.description,
+    status: iv.status,
+    urgent: iv.urgency === "urgence",
+    amount_cents: iv.total_amount_cents || iv.balance_cents,
+  };
+}
+
+export default function ArtisanMissions() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
   const [availableNow, setAvailableNow] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [bookings, setBookings] = useState<Booking[]>([]);
   const [interventions, setInterventions] = useState<Intervention[]>([]);
-  const [slots, setSlots] = useState<Slot[]>([]);
+  const [segment, setSegment] = useState<Segment>("todo");
+  const [refreshing, setRefreshing] = useState(false);
   const [loading, setLoading] = useState(true);
-  const [newDate, setNewDate] = useState("");
-  const [newTime, setNewTime] = useState("");
-  const [addingSlot, setAddingSlot] = useState(false);
-  const posRef = useRef<any>(null);
+  const posRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const load = useCallback(async () => {
     try {
-      const [profile, ivs, mySlots] = await Promise.all([
-        api<any>("/artisans/me"),
-        api<Intervention[]>("/interventions/mine"),
-        api<{ slots: Slot[] }>("/artisans/me/slots"),
+      const [profile, bk, ivs] = await Promise.all([
+        api<{ available_now?: boolean } | null>("/artisans/me").catch(() => null),
+        api<Booking[]>("/bookings/received").catch(() => []),
+        api<Intervention[]>("/interventions/mine").catch(() => []),
       ]);
-      setAvailableNow(!!profile.available_now);
-      setInterventions(ivs);
-      setSlots(mySlots.slots || []);
-    } catch {}
-    setLoading(false);
+      setAvailableNow(!!profile?.available_now);
+      setBookings(bk || []);
+      setInterventions(ivs || []);
+    } finally {
+      setLoading(false);
+    }
   }, []);
 
-  useFocusEffect(useCallback(() => { load(); }, [load]));
+  useFocusEffect(
+    useCallback(() => {
+      load();
+    }, [load]),
+  );
 
-  // Poll interventions every 6s
-  useEffect(() => {
-    const iv = setInterval(load, 6000);
-    return () => clearInterval(iv);
-  }, [load]);
-
-  // Push position every 20s while "available_now"
+  // Push position every 20s while "available_now" (moved from legacy live).
   useEffect(() => {
     const start = async () => {
-      const perm = await Location.requestForegroundPermissionsAsync();
-      if (perm.status !== "granted") return;
-      const push = async () => {
-        try {
-          const pos = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
-          await api("/artisans/me/position", {
-            method: "POST",
-            body: { lat: pos.coords.latitude, lng: pos.coords.longitude, available_now: availableNow },
-          });
-        } catch {}
-      };
-      push();
-      if (posRef.current) clearInterval(posRef.current);
-      posRef.current = setInterval(push, 20000);
+      try {
+        const perm = await Location.requestForegroundPermissionsAsync();
+        if (perm.status !== "granted") return;
+        const push = async () => {
+          try {
+            const pos = await Location.getCurrentPositionAsync({
+              accuracy: Location.Accuracy.Balanced,
+            });
+            await api("/artisans/me/position", {
+              method: "POST",
+              body: {
+                lat: pos.coords.latitude,
+                lng: pos.coords.longitude,
+                available_now: availableNow,
+              },
+            });
+          } catch {
+            /* silent */
+          }
+        };
+        push();
+        if (posRef.current) clearInterval(posRef.current);
+        posRef.current = setInterval(push, 20000);
+      } catch {
+        /* permissions denied or web fallback */
+      }
     };
-    if (availableNow) start();
-    else if (posRef.current) { clearInterval(posRef.current); posRef.current = null; }
-    return () => { if (posRef.current) clearInterval(posRef.current); };
+    if (availableNow) {
+      start();
+    } else if (posRef.current) {
+      clearInterval(posRef.current);
+      posRef.current = null;
+    }
+    return () => {
+      if (posRef.current) clearInterval(posRef.current);
+    };
   }, [availableNow]);
 
-  const toggleAvailable = async (v: boolean) => {
+  const toggleAvailable = async () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
     setBusy(true);
     try {
-      const res = await api<{ available_now: boolean }>("/artisans/me/available-now", { method: "POST" });
+      const res = await api<{ available_now: boolean }>(
+        "/artisans/me/available-now",
+        { method: "POST" },
+      );
       setAvailableNow(res.available_now);
-    } catch (e: any) {
-      Alert.alert("Erreur", e?.message);
-    } finally { setBusy(false); }
-  };
-
-  const respond = async (iv: Intervention, action: "accept" | "refuse") => {
-    try {
-      await api(`/interventions/${iv.intervention_id}/${action}`, { method: "POST", body: action === "refuse" ? { reason: "Non disponible" } : {} });
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
-      load();
-    } catch (e: any) {
-      Alert.alert("Erreur", e?.message);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "Erreur inconnue";
+      Alert.alert("Erreur", msg);
+    } finally {
+      setBusy(false);
     }
   };
 
-  const addSlot = async () => {
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(newDate) || !/^\d{2}:\d{2}$/.test(newTime)) {
-      return Alert.alert("Format", "Date : AAAA-MM-JJ  |  Heure : HH:MM");
+  const setBookingStatus = async (id: string, status: string) => {
+    try {
+      await api(`/bookings/${id}`, { method: "PATCH", body: { status } });
+      load();
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "Erreur";
+      Alert.alert("Erreur", msg);
     }
-    setAddingSlot(true);
+  };
+
+  const ivRespond = async (id: string, action: "accept" | "refuse") => {
     try {
-      await api("/artisans/me/slots", { method: "POST", body: { date: newDate, start_time: newTime, duration_min: 60 } });
-      setNewDate(""); setNewTime("");
+      await api(`/interventions/${id}/${action}`, {
+        method: "POST",
+        body: action === "refuse" ? { reason: "Non disponible" } : {},
+      });
       load();
-    } catch (e: any) { Alert.alert("Erreur", e?.message); }
-    finally { setAddingSlot(false); }
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "Erreur";
+      Alert.alert("Erreur", msg);
+    }
   };
 
-  const removeSlot = async (id: string) => {
+  const ivStart = async (id: string) => {
     try {
-      await api(`/artisans/me/slots/${id}`, { method: "DELETE" });
+      await api(`/interventions/${id}/start`, { method: "POST" });
       load();
-    } catch (e: any) { Alert.alert("Erreur", e?.message); }
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "Erreur";
+      Alert.alert("Erreur", msg);
+    }
   };
 
-  const pending = interventions.filter((i) => i.status === "pending");
-  const active = interventions.filter((i) => i.status === "confirmed" || i.status === "in_progress");
-
-  const startWork = async (iv: Intervention) => {
-    try { await api(`/interventions/${iv.intervention_id}/start`, { method: "POST" }); load(); }
-    catch (e: any) { Alert.alert("Erreur", e?.message); }
-  };
-  const finishWork = async (iv: Intervention) => {
-    Alert.prompt?.("Montant total (€)", "Entrez le montant total à facturer :", async (val) => {
-      const total = parseFloat(String(val || "0"));
-      if (!total || total <= 0) return;
+  const ivFinish = async (id: string) => {
+    // Simple confirmation prompt — sur mobile natif Alert.prompt existe.
+    // Web fallback : montant par défaut 250€.
+    if (typeof Alert.prompt === "function") {
+      Alert.prompt(
+        "Montant total (€)",
+        "Entrez le montant total à facturer :",
+        async (val) => {
+          const total = parseFloat(String(val || "0"));
+          if (!total || total <= 0) return;
+          try {
+            await api(`/interventions/${id}/finish`, {
+              method: "POST",
+              body: { total_amount_cents: Math.round(total * 100) },
+            });
+            load();
+          } catch (e) {
+            const msg = e instanceof Error ? e.message : "Erreur";
+            Alert.alert("Erreur", msg);
+          }
+        },
+      );
+    } else {
       try {
-        await api(`/interventions/${iv.intervention_id}/finish`, { method: "POST", body: { total_amount_cents: Math.round(total * 100) } });
+        await api(`/interventions/${id}/finish`, {
+          method: "POST",
+          body: { total_amount_cents: 25000 },
+        });
         load();
-      } catch (e: any) { Alert.alert("Erreur", e?.message); }
-    });
-    if (!Alert.prompt) {
-      // Android fallback — use default 250€
-      try {
-        await api(`/interventions/${iv.intervention_id}/finish`, { method: "POST", body: { total_amount_cents: 25000 } });
-        load();
-      } catch (e: any) { Alert.alert("Erreur", e?.message); }
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : "Erreur";
+        Alert.alert("Erreur", msg);
+      }
     }
   };
 
-  if (loading) {
-    return <View style={styles.container}><ActivityIndicator color={COLORS.accent} style={{ marginTop: 60 }} /></View>;
-  }
+  const onRefresh = async () => {
+    setRefreshing(true);
+    await load();
+    setRefreshing(false);
+  };
+
+  // Partition
+  const partitions = useMemo(() => {
+    const todo: {
+      bookings: Booking[];
+      interventions: Intervention[];
+    } = { bookings: [], interventions: [] };
+    const active: {
+      bookings: Booking[];
+      interventions: Intervention[];
+    } = { bookings: [], interventions: [] };
+    const history: {
+      bookings: Booking[];
+      interventions: Intervention[];
+    } = { bookings: [], interventions: [] };
+    for (const b of bookings) {
+      if (TODO_STATUSES.has(b.status)) todo.bookings.push(b);
+      else if (ACTIVE_STATUSES.has(b.status)) active.bookings.push(b);
+      else if (HISTORY_STATUSES.has(b.status)) history.bookings.push(b);
+    }
+    for (const iv of interventions) {
+      if (TODO_STATUSES.has(iv.status)) todo.interventions.push(iv);
+      else if (ACTIVE_STATUSES.has(iv.status)) active.interventions.push(iv);
+      else if (HISTORY_STATUSES.has(iv.status)) history.interventions.push(iv);
+    }
+    return { todo, active, history };
+  }, [bookings, interventions]);
+
+  const todoCount =
+    partitions.todo.bookings.length + partitions.todo.interventions.length;
+  const activeCount =
+    partitions.active.bookings.length + partitions.active.interventions.length;
+  const historyCount = Math.min(
+    30,
+    partitions.history.bookings.length + partitions.history.interventions.length,
+  );
+  const badge = (n: number) => (n > 0 ? n.toString() : "");
+
+  // Urgent (top of "todo")
+  const urgent = useMemo(
+    () => [
+      ...partitions.todo.bookings.filter((b) => b.urgent),
+      ...partitions.todo.interventions.filter((iv) => iv.urgency === "urgence"),
+    ],
+    [partitions],
+  );
+
+  const openMission = (m: MissionData) => {
+    if (m.kind === "intervention") {
+      router.push({ pathname: "/intervention/[id]", params: { id: m.id } });
+    } else {
+      router.push({ pathname: "/track/[id]", params: { id: m.id } });
+    }
+  };
 
   return (
-    <ScrollView
-      style={styles.container}
-      contentContainerStyle={{ paddingTop: insets.top + 12, paddingBottom: insets.bottom + 40 }}
-    >
-      <View style={styles.headerRow}>
-        <Txt weight="extrabold" size="2xl" style={{ color: COLORS.white }}>Live</Txt>
-        <Txt size="sm" style={{ color: COLORS.muted }}>Gérez vos interventions en direct</Txt>
-      </View>
-
-      {/* Available now toggle */}
-      <View style={styles.availCard}>
-        <View style={{ flex: 1 }}>
-          <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-            <View style={[styles.pulseDot, availableNow && { backgroundColor: COLORS.success }]} />
-            <Txt weight="bold" size="lg" style={{ color: COLORS.white }}>
-              {availableNow ? "Disponible maintenant" : "Non disponible"}
-            </Txt>
-          </View>
-          <Txt size="sm" style={{ color: COLORS.secondary, marginTop: 6, lineHeight: 20 }}>
-            {availableNow
-              ? "Votre position est partagée avec les clients cherchant une intervention immédiate."
-              : "Activez pour recevoir des demandes d'intervention immédiate."}
+    <View style={styles.root}>
+      <ScrollView
+        contentContainerStyle={{
+          paddingTop: insets.top + spacing.md,
+          paddingBottom: insets.bottom + spacing["3xl"],
+        }}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={onRefresh}
+            tintColor={colors.brand}
+          />
+        }
+      >
+        {/* --- Header ------------------------------------------------- */}
+        <View style={styles.header}>
+          <Txt size="sm" color={colors.muted}>
+            Missions
+          </Txt>
+          <Txt weight="extrabold" size="3xl" style={{ marginTop: 2 }}>
+            Mes missions
           </Txt>
         </View>
-        <Switch
-          testID="toggle-available"
-          value={availableNow}
-          onValueChange={toggleAvailable}
-          disabled={busy}
-          trackColor={{ true: COLORS.success, false: COLORS.border }}
-          thumbColor={COLORS.white}
-        />
-      </View>
 
-      {/* Active interventions */}
-      {active.length > 0 && (
-        <View style={{ marginTop: 20 }}>
-          <Txt weight="bold" style={styles.sectionH}>Interventions en cours ({active.length})</Txt>
-          {active.map((iv) => (
-            <View key={iv.intervention_id} style={styles.ivCard}>
-              <View style={styles.ivRow}>
-                <View style={styles.ivIcon}>
-                  <Ionicons name={iv.status === "in_progress" ? "construct" : "checkmark-circle"} size={16} color={COLORS.accent} />
-                </View>
-                <View style={{ flex: 1 }}>
-                  <Txt weight="bold" style={{ color: COLORS.white }}>{iv.client_name || "Client"}</Txt>
-                  <Txt size="sm" style={{ color: COLORS.muted }}>
-                    {iv.status === "confirmed" ? "Acompte payé — prêt à démarrer" : "En cours"}
-                  </Txt>
-                </View>
-              </View>
-              <View style={styles.ivActions}>
-                {iv.status === "confirmed" && (
-                  <Pressable onPress={() => startWork(iv)} style={({ pressed }) => [styles.btnAccept, pressed && { opacity: 0.85 }]}>
-                    <Ionicons name="play" size={14} color={COLORS.bg} />
-                    <Txt weight="bold" style={{ color: COLORS.bg, marginLeft: 6 }}>Démarrer</Txt>
-                  </Pressable>
-                )}
-                {iv.status === "in_progress" && (
-                  <Pressable onPress={() => finishWork(iv)} style={({ pressed }) => [styles.btnAccept, pressed && { opacity: 0.85 }]}>
-                    <Ionicons name="checkmark-done" size={14} color={COLORS.bg} />
-                    <Txt weight="bold" style={{ color: COLORS.bg, marginLeft: 6 }}>Terminer</Txt>
-                  </Pressable>
-                )}
-              </View>
-            </View>
-          ))}
-        </View>
-      )}
-
-      {/* Pending interventions */}
-      {pending.length > 0 && (
-        <View style={{ marginTop: 20 }}>
-          <Txt weight="bold" style={styles.sectionH}>Demandes en attente ({pending.length})</Txt>
-          {pending.map((iv, i) => (
-            <Animated.View key={iv.intervention_id} entering={FadeInUp.delay(i * 80).duration(300)} style={styles.ivCard}>
-              <View style={styles.ivRow}>
-                <View style={styles.ivIcon}>
-                  <Ionicons name="flash" size={16} color={COLORS.accent} />
-                </View>
-                <View style={{ flex: 1 }}>
-                  <Txt weight="bold" style={{ color: COLORS.white }}>{iv.client_name || "Client"}</Txt>
-                  <Txt size="sm" style={{ color: COLORS.muted, marginTop: 2 }}>
-                    {iv.trade} · {iv.urgency || "standard"}
-                  </Txt>
-                </View>
-              </View>
-              <Txt size="sm" style={{ color: COLORS.secondary, marginTop: 8, lineHeight: 20 }} numberOfLines={3}>
-                {iv.description}
+        {/* --- Available now ---------------------------------------- */}
+        <View style={styles.availCard}>
+          <View style={{ flex: 1 }}>
+            <View style={styles.availTitle}>
+              <View
+                style={[
+                  styles.availDot,
+                  { backgroundColor: availableNow ? colors.success : colors.muted },
+                ]}
+              />
+              <Txt weight="bold" size="lg">
+                {availableNow ? "Disponible maintenant" : "Non disponible"}
               </Txt>
-              {iv.price_estimate_min != null && (
-                <Txt size="sm" style={{ color: COLORS.accent, marginTop: 6 }}>
-                  Estimation : {iv.price_estimate_min}-{iv.price_estimate_max} €
+            </View>
+            <Txt
+              size="sm"
+              color={colors.muted}
+              style={{ marginTop: 6, lineHeight: 20 }}
+            >
+              {availableNow
+                ? "Votre position est partagée avec les clients à proximité."
+                : "Activez pour recevoir des demandes d'intervention immédiate."}
+            </Txt>
+          </View>
+          <Switch
+            testID="toggle-available"
+            value={availableNow}
+            onValueChange={toggleAvailable}
+            disabled={busy}
+            trackColor={{ true: colors.brand, false: colors.borderStrong }}
+            thumbColor={colors.surface}
+          />
+        </View>
+
+        {/* --- Segment control -------------------------------------- */}
+        <View style={styles.segment}>
+          {SEGMENTS.map((s) => {
+            const active = segment === s.key;
+            const count =
+              s.key === "todo"
+                ? todoCount
+                : s.key === "active"
+                  ? activeCount
+                  : historyCount;
+            return (
+              <Pressable
+                key={s.key}
+                testID={`seg-${s.key}`}
+                onPress={() => setSegment(s.key)}
+                style={[styles.segItem, active && styles.segItemActive]}
+              >
+                <Txt
+                  weight="bold"
+                  size="sm"
+                  color={active ? colors.textInverse : colors.muted}
+                >
+                  {s.label}
                 </Txt>
-              )}
-              <View style={styles.ivActions}>
-                <Pressable
-                  testID={`refuse-${iv.intervention_id}`}
-                  onPress={() => respond(iv, "refuse")}
-                  style={({ pressed }) => [styles.btnGhost, pressed && { opacity: 0.7 }]}
-                >
-                  <Txt weight="bold" style={{ color: COLORS.error }}>Refuser</Txt>
-                </Pressable>
-                <Pressable
-                  testID={`accept-${iv.intervention_id}`}
-                  onPress={() => respond(iv, "accept")}
-                  style={({ pressed }) => [styles.btnAccept, pressed && { opacity: 0.85 }]}
-                >
-                  <Ionicons name="checkmark" size={16} color={COLORS.bg} />
-                  <Txt weight="bold" style={{ color: COLORS.bg, marginLeft: 6 }}>Accepter</Txt>
-                </Pressable>
-              </View>
-            </Animated.View>
-          ))}
-        </View>
-      )}
-
-      {/* Stripe Connect card */}
-      <View style={{ marginTop: 24 }}>
-        <Txt weight="bold" style={styles.sectionH}>Paiements Stripe</Txt>
-        <Pressable
-          testID="stripe-connect-cta"
-          onPress={() => router.push("/connect")}
-          style={({ pressed }) => [styles.stripeCard, pressed && { opacity: 0.85 }]}
-        >
-          <View style={styles.stripeIcon}>
-            <Ionicons name="card" size={22} color={COLORS.accent} />
-          </View>
-          <View style={{ flex: 1, marginLeft: 12 }}>
-            <Txt weight="bold" style={{ color: COLORS.white }}>Connecter Stripe</Txt>
-            <Txt size="sm" style={{ color: COLORS.muted, marginTop: 2 }}>
-              Recevoir vos paiements sur votre compte bancaire
-            </Txt>
-          </View>
-          <Ionicons name="chevron-forward" size={18} color={COLORS.muted} />
-        </Pressable>
-      </View>
-
-      {/* Manual slots */}
-      <View style={{ marginTop: 24 }}>
-        <Txt weight="bold" style={styles.sectionH}>Mes créneaux ({slots.length})</Txt>        <Txt size="sm" style={{ color: COLORS.muted, paddingHorizontal: 20, marginBottom: 12 }}>
-          Créez vos disponibilités. Les clients pourront réserver ces créneaux.
-        </Txt>
-
-        <View style={styles.slotInputRow}>
-          <TextInput
-            value={newDate}
-            onChangeText={setNewDate}
-            placeholder="AAAA-MM-JJ"
-            placeholderTextColor={COLORS.muted}
-            style={styles.input}
-          />
-          <TextInput
-            value={newTime}
-            onChangeText={setNewTime}
-            placeholder="HH:MM"
-            placeholderTextColor={COLORS.muted}
-            style={[styles.input, { width: 88 }]}
-          />
-          <Pressable
-            testID="add-slot"
-            onPress={addSlot}
-            disabled={addingSlot}
-            style={({ pressed }) => [styles.addBtn, (addingSlot || pressed) && { opacity: 0.8 }]}
-          >
-            <Ionicons name="add" size={20} color={COLORS.bg} />
-          </Pressable>
+                {badge(count) ? (
+                  <View
+                    style={[
+                      styles.segBadge,
+                      active
+                        ? { backgroundColor: colors.textInverse }
+                        : { backgroundColor: colors.borderStrong },
+                    ]}
+                  >
+                    <Txt
+                      weight="bold"
+                      size="sm"
+                      color={active ? colors.brand : colors.onSurface}
+                    >
+                      {badge(count)}
+                    </Txt>
+                  </View>
+                ) : null}
+              </Pressable>
+            );
+          })}
         </View>
 
-        {slots.length === 0 && (
-          <Txt size="sm" style={{ color: COLORS.muted, textAlign: "center", paddingHorizontal: 20, marginTop: 12 }}>
-            Aucun créneau — ajoutez-en pour permettre aux clients de réserver.
-          </Txt>
+        {/* --- List ------------------------------------------------- */}
+        {loading ? (
+          <View style={{ paddingTop: 40 }}>
+            <ActivityIndicator color={colors.brand} />
+          </View>
+        ) : (
+          <View style={styles.listWrap}>
+            {segment === "todo" && (
+              <>
+                {urgent.length > 0 && (
+                  <View style={styles.urgentBlock}>
+                    <View style={styles.urgentTag}>
+                      <View style={styles.urgentDot} />
+                      <Txt
+                        weight="extrabold"
+                        size="sm"
+                        color={colors.textInverse}
+                        style={{ letterSpacing: 1.5 }}
+                      >
+                        URGENT
+                      </Txt>
+                    </View>
+                    <Txt
+                      weight="bold"
+                      size="lg"
+                      style={{ marginLeft: spacing.sm }}
+                    >
+                      {urgent.length} demande{urgent.length > 1 ? "s" : ""} prioritaire
+                      {urgent.length > 1 ? "s" : ""}
+                    </Txt>
+                  </View>
+                )}
+                {todoCount === 0 ? (
+                  <EmptyBlock
+                    icon="mail-open-outline"
+                    text="Aucune demande à traiter. Restez disponible pour en recevoir."
+                  />
+                ) : (
+                  <>
+                    {partitions.todo.bookings.map((b) => (
+                      <RequestCard
+                        key={b.booking_id}
+                        request={b}
+                        onAccept={(id) => setBookingStatus(id, "accepted")}
+                        onDecline={(id) => setBookingStatus(id, "declined")}
+                        onOpen={(id) =>
+                          router.push({
+                            pathname: "/track/[id]",
+                            params: { id },
+                          })
+                        }
+                      />
+                    ))}
+                    {partitions.todo.interventions.map((iv) => (
+                      <MissionCard
+                        key={iv.intervention_id}
+                        mission={interventionToMission(iv)}
+                        onOpen={openMission}
+                        actions={[
+                          {
+                            label: "Refuser",
+                            onPress: () => ivRespond(iv.intervention_id, "refuse"),
+                            variant: "ghost",
+                            testID: `iv-refuse-${iv.intervention_id}`,
+                          },
+                          {
+                            label: "Accepter",
+                            icon: "checkmark",
+                            onPress: () => ivRespond(iv.intervention_id, "accept"),
+                            variant: "primary",
+                            testID: `iv-accept-${iv.intervention_id}`,
+                          },
+                        ]}
+                      />
+                    ))}
+                  </>
+                )}
+              </>
+            )}
+
+            {segment === "active" && (
+              <>
+                {activeCount === 0 ? (
+                  <EmptyBlock
+                    icon="briefcase-outline"
+                    text="Aucune mission en cours pour le moment."
+                  />
+                ) : (
+                  <>
+                    {partitions.active.bookings.map((b) => (
+                      <MissionCard
+                        key={b.booking_id}
+                        mission={bookingToMission(b)}
+                        onOpen={openMission}
+                        actions={[
+                          {
+                            label: "Message",
+                            icon: "chatbubble-ellipses-outline",
+                            onPress: () =>
+                              b.conversation_id &&
+                              router.push({
+                                pathname: "/chat/[id]",
+                                params: {
+                                  id: b.conversation_id,
+                                  name: b.client_name,
+                                },
+                              }),
+                            variant: "ghost",
+                            testID: `bk-msg-${b.booking_id}`,
+                          },
+                          {
+                            label: "Terminer",
+                            icon: "checkmark-done",
+                            onPress: () =>
+                              setBookingStatus(b.booking_id, "completed"),
+                            variant: "primary",
+                            testID: `bk-finish-${b.booking_id}`,
+                          },
+                        ]}
+                      />
+                    ))}
+                    {partitions.active.interventions.map((iv) => {
+                      const actions: Action[] = [];
+                      if (iv.status === "confirmed" || iv.status === "accepted") {
+                        actions.push({
+                          label: "Démarrer",
+                          icon: "play",
+                          onPress: () => ivStart(iv.intervention_id),
+                          variant: "primary",
+                          testID: `iv-start-${iv.intervention_id}`,
+                        });
+                      } else if (iv.status === "in_progress") {
+                        actions.push({
+                          label: "Terminer",
+                          icon: "checkmark-done",
+                          onPress: () => ivFinish(iv.intervention_id),
+                          variant: "primary",
+                          testID: `iv-finish-${iv.intervention_id}`,
+                        });
+                      }
+                      return (
+                        <MissionCard
+                          key={iv.intervention_id}
+                          mission={interventionToMission(iv)}
+                          onOpen={openMission}
+                          actions={actions}
+                        />
+                      );
+                    })}
+                  </>
+                )}
+              </>
+            )}
+
+            {segment === "history" && (
+              <>
+                {historyCount === 0 ? (
+                  <EmptyBlock
+                    icon="archive-outline"
+                    text="Votre historique est vide."
+                  />
+                ) : (
+                  <>
+                    {partitions.history.bookings.slice(0, 30).map((b) => (
+                      <MissionCard
+                        key={b.booking_id}
+                        mission={bookingToMission(b)}
+                        onOpen={openMission}
+                      />
+                    ))}
+                    {partitions.history.interventions.slice(0, 30).map((iv) => (
+                      <MissionCard
+                        key={iv.intervention_id}
+                        mission={interventionToMission(iv)}
+                        onOpen={openMission}
+                      />
+                    ))}
+                  </>
+                )}
+              </>
+            )}
+          </View>
         )}
-        {slots.map((s) => (
-          <View key={s.slot_id} style={styles.slotRow}>
-            <Ionicons name="calendar" size={16} color={COLORS.accent} />
-            <Txt weight="semibold" style={{ color: COLORS.white, marginLeft: 8, flex: 1 }}>
-              {s.date} · {s.start_time} ({s.duration_min} min)
-            </Txt>
-            <Pressable onPress={() => removeSlot(s.slot_id)} hitSlop={10}>
-              <Ionicons name="trash-outline" size={16} color={COLORS.error} />
-            </Pressable>
-          </View>
-        ))}
-
-        {/* Google Calendar OAuth teaser */}
-        <View style={styles.oauthTeaser}>
-          <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-            <Ionicons name="logo-google" size={16} color={COLORS.accent} />
-            <Txt weight="bold" size="sm" style={{ color: COLORS.white }}>Google Calendar / Outlook</Txt>
-          </View>
-          <Txt size="sm" style={{ color: COLORS.muted, marginTop: 6, lineHeight: 18 }}>
-            Connexion OAuth réelle disponible dans le prochain sprint. Vos créneaux se synchroniseront automatiquement.
-          </Txt>
-          <Pressable
-            testID="oauth-teaser"
-            onPress={() => Alert.alert("Bientôt disponible", "Connexion Google/Outlook prévue dans le prochain sprint.")}
-            style={styles.oauthBtn}
-          >
-            <Txt size="sm" weight="bold" style={{ color: COLORS.accent }}>M&apos;avertir quand ce sera prêt</Txt>
-          </Pressable>
-        </View>
-      </View>
-    </ScrollView>
+      </ScrollView>
+    </View>
   );
 }
 
+function EmptyBlock({
+  icon,
+  text,
+}: {
+  icon: keyof typeof Ionicons.glyphMap;
+  text: string;
+}) {
+  return (
+    <View style={styles.emptyCard}>
+      <Ionicons name={icon} size={26} color={colors.muted} />
+      <Txt
+        size="sm"
+        color={colors.muted}
+        style={{ marginTop: spacing.md, textAlign: "center", lineHeight: 20 }}
+      >
+        {text}
+      </Txt>
+    </View>
+  );
+}
+
+// Duplicate Action type import to keep MissionCard's Action structural type
+// aligned with what we pass (icon typing must resolve to Ionicons glyphs).
+type Action = {
+  label: string;
+  onPress: () => void;
+  variant?: "primary" | "ghost";
+  icon?: keyof typeof Ionicons.glyphMap;
+  testID?: string;
+};
+
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: COLORS.bg },
-  headerRow: { paddingHorizontal: 20, marginBottom: 16, gap: 4 },
+  root: {
+    flex: 1,
+    backgroundColor: colors.surface,
+  },
+  header: {
+    paddingHorizontal: spacing.lg,
+    marginBottom: spacing.lg,
+  },
   availCard: {
-    marginHorizontal: 20,
     flexDirection: "row",
     alignItems: "center",
-    padding: 18,
-    backgroundColor: COLORS.bgSoft,
-    borderRadius: 20,
-    borderWidth: 1, borderColor: COLORS.border,
+    marginHorizontal: spacing.lg,
+    padding: spacing.lg,
+    backgroundColor: colors.surfaceSecondary,
+    borderRadius: radius.lg,
+    marginBottom: spacing.lg,
   },
-  pulseDot: {
-    width: 10, height: 10, borderRadius: 5,
-    backgroundColor: COLORS.muted,
-  },
-  sectionH: { paddingHorizontal: 20, marginBottom: 10, color: COLORS.white, fontSize: 16 },
-  ivCard: {
-    marginHorizontal: 20,
-    marginBottom: 10,
-    padding: 14,
-    backgroundColor: COLORS.bgSoft,
-    borderRadius: 16,
-    borderWidth: 1, borderColor: COLORS.border,
-  },
-  ivRow: { flexDirection: "row", alignItems: "center" },
-  ivIcon: {
-    width: 36, height: 36, borderRadius: 18,
-    backgroundColor: "rgba(200,169,107,0.15)",
-    alignItems: "center", justifyContent: "center", marginRight: 10,
-  },
-  ivActions: { flexDirection: "row", gap: 10, marginTop: 12 },
-  btnGhost: {
-    flex: 1,
-    borderRadius: 12,
-    paddingVertical: 12,
-    alignItems: "center",
-    borderWidth: 1, borderColor: COLORS.error,
-    backgroundColor: "rgba(248,113,113,0.06)",
-  },
-  btnAccept: {
-    flex: 1,
+  availTitle: {
     flexDirection: "row",
-    borderRadius: 12,
-    paddingVertical: 12,
+    alignItems: "center",
+    gap: 8,
+  },
+  availDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+  },
+  segment: {
+    flexDirection: "row",
+    marginHorizontal: spacing.lg,
+    backgroundColor: colors.surfaceSecondary,
+    borderRadius: radius.md,
+    padding: 4,
+    marginBottom: spacing.lg,
+  },
+  segItem: {
+    flex: 1,
+    height: 38,
+    borderRadius: radius.sm,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: COLORS.accent,
+    flexDirection: "row",
+    gap: 6,
   },
-  slotInputRow: { flexDirection: "row", gap: 8, paddingHorizontal: 20, marginBottom: 12 },
-  input: {
-    flex: 1,
-    backgroundColor: COLORS.bgSoft,
-    borderRadius: 12,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-    color: COLORS.white,
-    borderWidth: 1, borderColor: COLORS.border,
+  segItemActive: {
+    backgroundColor: colors.brand,
   },
-  addBtn: {
-    width: 46, height: 46, borderRadius: 12,
-    backgroundColor: COLORS.accent,
-    alignItems: "center", justifyContent: "center",
+  segBadge: {
+    minWidth: 20,
+    height: 20,
+    borderRadius: 10,
+    paddingHorizontal: 6,
+    alignItems: "center",
+    justifyContent: "center",
   },
-  slotRow: {
-    marginHorizontal: 20,
+  listWrap: {
+    paddingHorizontal: spacing.lg,
+  },
+  urgentBlock: {
     flexDirection: "row",
     alignItems: "center",
-    padding: 14,
-    backgroundColor: COLORS.bgSoft,
-    borderRadius: 12,
-    borderWidth: 1, borderColor: COLORS.border,
-    marginBottom: 6,
+    marginBottom: spacing.md,
   },
-  oauthTeaser: {
-    marginHorizontal: 20,
-    marginTop: 16,
-    padding: 14,
-    backgroundColor: "rgba(200,169,107,0.05)",
-    borderRadius: 14,
-    borderWidth: 1, borderColor: "rgba(200,169,107,0.2)",
-  },
-  oauthBtn: {
-    alignSelf: "flex-start",
-    marginTop: 10,
-    paddingHorizontal: 10, paddingVertical: 6,
-    borderRadius: 8,
-    borderWidth: 1, borderColor: "rgba(200,169,107,0.3)",
-  },
-  stripeCard: {
-    marginHorizontal: 20,
+  urgentTag: {
     flexDirection: "row",
     alignItems: "center",
-    padding: 16,
-    backgroundColor: COLORS.bgSoft,
-    borderRadius: 16,
-    borderWidth: 1, borderColor: COLORS.border,
+    backgroundColor: colors.error,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: radius.sm,
+    gap: 6,
   },
-  stripeIcon: {
-    width: 44, height: 44, borderRadius: 14,
-    backgroundColor: "rgba(200,169,107,0.15)",
-    alignItems: "center", justifyContent: "center",
-    borderWidth: 1, borderColor: "rgba(200,169,107,0.3)",
+  urgentDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: colors.textInverse,
+  },
+  emptyCard: {
+    padding: spacing.xl,
+    borderRadius: radius.lg,
+    borderWidth: 1,
+    borderColor: colors.border,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: colors.surface,
   },
 });
